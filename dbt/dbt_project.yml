@@ -1,0 +1,25 @@
+name: jobs_pipeline
+version: "1.0.0"
+profile: jobs_pipeline
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+
+models:
+  jobs_pipeline:
+    staging:
+      +schema: gmail_staging
+      +materialized: view
+    intermediate:
+      +schema: gmail_intermediate
+      +materialized: ephemeral       # not persisted, folded into mart query
+    marts:
+      +schema: gmail_marts
+      +materialized: table
+      +partition_by:
+        field: received_at
+        data_type: timestamp
+        granularity: day
+      +cluster_by: ["job_pipeline_category", "sender"]

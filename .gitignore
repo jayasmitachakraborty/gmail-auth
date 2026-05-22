@@ -1,0 +1,89 @@
+# --- Secrets / credentials (never commit) ---
+creds/
+*.pem
+*.key
+*-key.json
+service-account*.json
+client_secret*.json
+credentials.json
+tokens.json
+token.json
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build / packaging
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Terraform ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+*.tfplan.*
+# Keep .terraform.lock.hcl committed; uncomment to ignore:
+# .terraform.lock.hcl
+# Local variable files often contain secrets/project IDs
+*.tfvars
+*.tfvars.json
+!example.tfvars
+!example.tfvars.json
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+
+# dbt
+dbt/profiles.yml
+ingestion/.env
+dbt/target/
+dbt/dbt_packages/

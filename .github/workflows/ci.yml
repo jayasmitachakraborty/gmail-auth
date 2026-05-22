@@ -1,0 +1,43 @@
+#runs on every pull request
+name: CI 
+
+on:
+  pull_request:
+    paths:
+      - 'dbt/**'
+      - 'ingestion/**'
+      - 'infra/**'
+
+jobs:
+  dbt-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install dbt-bigquery
+      - name: Write GCP service-account key to file
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          printf '%s' "$GCP_SA_KEY" > "${RUNNER_TEMP}/gcp-sa-key.json"
+          echo "DBT_SA_KEYFILE=${RUNNER_TEMP}/gcp-sa-key.json" >> "$GITHUB_ENV"
+      - name: dbt compile + test
+        run: |
+          cd dbt
+          dbt deps
+          dbt compile --target prod
+          dbt test --target prod --select staging
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform plan
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          cd infra
+          terraform init
+          terraform plan

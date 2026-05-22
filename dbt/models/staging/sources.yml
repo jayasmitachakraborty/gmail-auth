@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: gmail_data
+    project: jobs-and-career-494813
+    dataset: gmail_data
+    tables:
+      - name: gmail_messages
+        columns:
+          - name: message_id
+            tests: [unique, not_null]
+
+models:
+  - name: stg_gmail_messages
+    description: "Cleaned Gmail messages from raw landing table"
+    columns:
+      - name: message_id
+        tests: [unique, not_null]

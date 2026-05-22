@@ -1,0 +1,67 @@
+[
+    {
+      "name": "message_id",
+      "type": "STRING",
+      "mode": "REQUIRED"
+    },
+    {
+      "name": "thread_id",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "history_id",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "subject",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "sender",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "recipient",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "date",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "snippet",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "plain_body",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "html_body",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "labels",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "received_at",
+      "type": "TIMESTAMP",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "ingested_at",
+      "type": "TIMESTAMP",
+      "mode": "REQUIRED"
+    }
+  ]
