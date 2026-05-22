@@ -1,0 +1,91 @@
+# Manual end-to-end run:
+#   1. Invoke the gmail-bigquery-ingestor Cloud Function over authenticated
+#      HTTPS. The function is synchronous, so the HTTP 200 response IS the
+#      completion signal — no polling.
+#   2. Run `dbt build --target prod` against the freshly-loaded rows.
+#
+# Trigger from GitHub UI: Actions → "Ingest + dbt build" → Run workflow.
+name: Ingest + dbt build
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_backfill:
+        description: "Ignore watermark and re-fetch from FIRST_RUN_START_DATE"
+        type: boolean
+        default: false
+
+jobs:
+  ingest-and-build:
+    runs-on: ubuntu-latest
+    # Function timeout is 3600s; leave generous headroom for dbt build.
+    timeout-minutes: 90
+
+    env:
+      GCP_PROJECT_ID: jobs-and-career-494813
+      GCP_REGION: us-central1
+      FUNCTION_NAME: gmail-bigquery-ingestor
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve Cloud Function URL
+        id: fn
+        run: |
+          URL=$(gcloud functions describe "$FUNCTION_NAME" \
+                  --gen2 \
+                  --region="$GCP_REGION" \
+                  --project="$GCP_PROJECT_ID" \
+                  --format='value(serviceConfig.uri)')
+          if [ -z "$URL" ]; then
+            echo "Could not resolve function URL" >&2
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Invoke ingestion (blocks until complete)
+        env:
+          FUNCTION_URL: ${{ steps.fn.outputs.url }}
+          FULL_BACKFILL: ${{ inputs.full_backfill }}
+        run: |
+          TOKEN=$(gcloud auth print-identity-token --audiences="$FUNCTION_URL")
+          BODY=$(printf '{"source":"github-actions","full_backfill":"%s"}' "$FULL_BACKFILL")
+
+          HTTP_CODE=$(curl --silent --show-error \
+                           --max-time 3600 \
+                           --output response.json \
+                           --write-out '%{http_code}' \
+                           -H "Authorization: Bearer $TOKEN" \
+                           -H "Content-Type: application/json" \
+                           -d "$BODY" \
+                           "$FUNCTION_URL")
+
+          echo "Function response (HTTP $HTTP_CODE):"
+          cat response.json
+          echo
+          [ "$HTTP_CODE" = "200" ] || exit 1
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install dbt
+        run: pip install -r dbt/requirements.txt
+
+      - name: Write GCP service-account key to file
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          printf '%s' "$GCP_SA_KEY" > "${RUNNER_TEMP}/gcp-sa-key.json"
+          echo "DBT_SA_KEYFILE=${RUNNER_TEMP}/gcp-sa-key.json" >> "$GITHUB_ENV"
+
+      - name: dbt build
+        run: |
+          cd dbt
+          dbt deps
+          dbt build --target prod

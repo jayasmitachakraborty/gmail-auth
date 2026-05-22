@@ -35,7 +35,6 @@ module "scheduler" {
   gmail_user_email     = var.gmail_user_email
   first_run_start_date = var.first_run_start_date
   gmail_query_extra    = var.gmail_query_extra
-  schedule_cron        = var.schedule_cron
 
   # BigQuery table the function reads/writes
   bq_dataset_id = var.dataset_id

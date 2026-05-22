@@ -1,20 +1,21 @@
 # infra/modules/scheduler/main.tf
 #
-# Replaces the Cloud Run Job approach with:
-#   Cloud Function v2 (HTTP trigger, runs the ingestion code)
-#   Cloud Scheduler  (invokes the function daily via authenticated HTTP POST)
+# NOTE: module is still named "scheduler" for backwards-compat with existing
+# Terraform state. It no longer provisions Cloud Scheduler — only the
+# Cloud Function v2 that runs the ingestion pipeline. The function is now
+# invoked directly from GitHub Actions (.github/workflows/ingest-and-build.yml).
 #
 # Execution flow:
-#   Cloud Scheduler ──POST──▶ Cloud Function HTTPS URL
-#                                    │
-#                                    ▼
-#                            run_pipeline.main()
-#                                    │
-#                            Gmail API (subject impersonation)
-#                            BigQuery  (ADC via function SA)
+#   GitHub Actions ──HTTPS POST + OIDC──▶ Cloud Function HTTPS URL
+#                                                │
+#                                                ▼
+#                                        run_pipeline.main()
+#                                                │
+#                                        Gmail API (subject impersonation)
+#                                        BigQuery  (ADC via function SA)
 #
 # The function source is zipped from ingestion/ at plan time via the
-# archive_file data source.  CI/CD can re-deploy by running terraform apply
+# archive_file data source. CI/CD can re-deploy by running terraform apply
 # or by pushing a new zip to the GCS staging bucket and running apply.
 
 variable "project_id" { type = string }
@@ -33,23 +34,6 @@ variable "first_run_start_date" {
 variable "gmail_query_extra" {
   type    = string
   default = "in:inbox"
-}
-
-variable "schedule_cron" {
-  type        = string
-  default     = "0 6 * * *"
-  description = "Cron expression. Only fires automatically when schedule_paused = false."
-}
-
-variable "schedule_paused" {
-  type        = bool
-  default     = true
-  description = <<-EOT
-    If true, the scheduler job is created in PAUSED state and never fires on
-    its own. Trigger manually with:
-      gcloud scheduler jobs run gmail-ingestor-daily --location=<region>
-    Set to false to resume the daily cron.
-  EOT
 }
 
 variable "function_timeout_seconds" {
@@ -104,7 +88,7 @@ resource "google_cloudfunctions2_function" "gmail_ingestor" {
   location = var.region
   project  = var.project_id
 
-  description = "Incremental Gmail → BigQuery sync, triggered daily by Cloud Scheduler"
+  description = "Incremental Gmail → BigQuery sync, invoked on demand via authenticated HTTPS (GitHub Actions)"
 
   build_config {
     runtime     = "python311"
@@ -148,35 +132,6 @@ resource "google_cloudfunctions2_function" "gmail_ingestor" {
   }
 }
 
-# ── Cloud Scheduler ───────────────────────────────────────────────────────────
-# A dedicated invoker SA is used so the scheduler identity is separate from
-# the function's runtime identity (principle of least privilege).
-
-resource "google_service_account" "scheduler_invoker" {
-  account_id   = "gmail-ingestor-invoker"
-  display_name = "Cloud Scheduler invoker — gmail ingestor"
-  project      = var.project_id
-}
-
-# Allow the invoker SA to call the Cloud Function
-resource "google_cloudfunctions2_function_iam_member" "scheduler_invoker" {
-  project        = var.project_id
-  location       = var.region
-  cloud_function = google_cloudfunctions2_function.gmail_ingestor.name
-  role           = "roles/cloudfunctions.invoker"
-  member         = "serviceAccount:${google_service_account.scheduler_invoker.email}"
-}
-
-# Also needs run.routes.invoke on the underlying Cloud Run service that
-# backs Cloud Functions v2.
-resource "google_cloud_run_service_iam_member" "scheduler_run_invoker" {
-  project  = var.project_id
-  location = var.region
-  service  = google_cloudfunctions2_function.gmail_ingestor.name
-  role     = "roles/run.invoker"
-  member   = "serviceAccount:${google_service_account.scheduler_invoker.email}"
-}
-
 # ── Destroy-time cleanup for resources auto-created by Cloud Functions v2 ─────
 # Cloud Functions v2 implicitly creates:
 #   - an Artifact Registry repo named `gcf-artifacts` (per region)
@@ -214,40 +169,6 @@ resource "null_resource" "gcf_artifacts_cleanup" {
   depends_on = [google_cloudfunctions2_function.gmail_ingestor]
 }
 
-resource "google_cloud_scheduler_job" "daily_ingest" {
-  name             = "gmail-ingestor-daily"
-  description      = "Manual-trigger job for gmail-bigquery-ingestor (paused by default; run with `gcloud scheduler jobs run`)"
-  schedule         = var.schedule_cron
-  time_zone        = "UTC"
-  project          = var.project_id
-  region           = var.region
-  attempt_deadline = "1800s"
-  paused           = var.schedule_paused
-
-  retry_config {
-    retry_count = 2
-  }
-
-  http_target {
-    http_method = "POST"
-    uri         = google_cloudfunctions2_function.gmail_ingestor.service_config[0].uri
-
-    # Pass body so run_pipeline_http can distinguish scheduler vs manual calls
-    body = base64encode(jsonencode({ source = "cloud-scheduler" }))
-
-    headers = {
-      "Content-Type" = "application/json"
-    }
-
-    oidc_token {
-      service_account_email = google_service_account.scheduler_invoker.email
-      audience              = google_cloudfunctions2_function.gmail_ingestor.service_config[0].uri
-    }
-  }
-
-  depends_on = [google_cloudfunctions2_function_iam_member.scheduler_invoker]
-}
-
 # ── Outputs ───────────────────────────────────────────────────────────────────
 
 output "cloud_function_name" {
@@ -256,8 +177,4 @@ output "cloud_function_name" {
 
 output "cloud_function_url" {
   value = google_cloudfunctions2_function.gmail_ingestor.service_config[0].uri
-}
-
-output "scheduler_job_name" {
-  value = google_cloud_scheduler_job.daily_ingest.name
 }

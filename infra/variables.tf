@@ -46,9 +46,3 @@ variable "gmail_query_extra" {
   type    = string
   default = "in:inbox"
 }
-
-variable "schedule_cron" {
-  type        = string
-  default     = "0 6 * * *"
-  description = "Cron expression for the daily Cloud Scheduler job (UTC)"
-}

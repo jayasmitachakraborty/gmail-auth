@@ -2,10 +2,10 @@
 
 Entry points
 ────────────
-Cloud Function (HTTP trigger, called by Cloud Scheduler):
+Cloud Function (HTTP trigger, invoked from GitHub Actions or ad-hoc):
     run_pipeline_http(request)   ← set as entry_point in Terraform
 
-Local / manual scheduler trigger:
+Local / manual invocation:
     python scripts/run_pipeline.py               # run ingestion directly
     python scripts/run_pipeline.py --trigger     # POST to the Cloud Function URL
     python scripts/run_pipeline.py --backfill    # full backfill (ignores watermark)
@@ -25,7 +25,7 @@ Optional:
   GMAIL_QUERY_EXTRA       Default: in:inbox
   MAX_MESSAGES_PER_RUN    Default: 0 (unlimited)
 
-For --trigger (manual Cloud Scheduler invoke):
+For --trigger (manual Cloud Function invoke from your shell):
   FUNCTION_URL            HTTPS URL of the deployed Cloud Function
                           (printed by `terraform output cloud_function_url`)
 """
@@ -107,7 +107,7 @@ def run_pipeline(full_backfill: bool = False) -> dict:
 # ── Cloud Function HTTP entry point ───────────────────────────────────────────
 
 def run_pipeline_http(request) -> tuple[str, int]:
-    """HTTP handler — invoked by Cloud Scheduler via authenticated POST.
+    """HTTP handler — invoked over authenticated POST (GitHub Actions or ad-hoc).
 
     functions-framework passes a Werkzeug Request object; we only need
     request.get_json() from it so there is no Flask import required.
@@ -115,9 +115,8 @@ def run_pipeline_http(request) -> tuple[str, int]:
     Werkzeug and handles all HTTP plumbing — this function just returns a
     (body_str, status_code) tuple which the framework serialises for us.
 
-    Cloud Scheduler sends POST {"source": "cloud-scheduler"}.
-    Manual callers can POST {"full_backfill": true} to force a full re-sync.
-    Returns 200 on success, 500 on error (Scheduler retries on 5xx per retry_config).
+    Callers can POST {"full_backfill": true} to force a full re-sync.
+    Returns 200 on success, 500 on error.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -130,13 +129,13 @@ def run_pipeline_http(request) -> tuple[str, int]:
         return json.dumps(error_body), 500
 
 
-# ── CLI — local run or manual scheduler trigger ───────────────────────────────
+# ── CLI — local run or manual function trigger ────────────────────────────────
 
-def _trigger_scheduler_job() -> None:
+def _trigger_cloud_function() -> None:
     """POST to the deployed Cloud Function URL using ADC credentials.
 
-    Use this to manually kick off a run without waiting for the cron schedule,
-    e.g. after a deploy or to test in production:
+    Use this to manually kick off a run from your shell, e.g. after a deploy
+    or to test in production:
 
         python scripts/run_pipeline.py --trigger
     """
@@ -160,7 +159,7 @@ def _trigger_scheduler_job() -> None:
     auth_req = google.auth.transport.requests.Request()
     token = id_token.fetch_id_token(auth_req, function_url)
 
-    payload = json.dumps({"source": "manual-trigger"}).encode()
+    payload = json.dumps({"source": "manual-cli"}).encode()
     req = urllib.request.Request(
         function_url,
         data=payload,
@@ -193,7 +192,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.trigger:
-        _trigger_scheduler_job()
+        _trigger_cloud_function()
     else:
         try:
             run_pipeline(full_backfill=args.backfill)

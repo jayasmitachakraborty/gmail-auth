@@ -27,10 +27,6 @@ output "cloud_function_url" {
   description = "HTTPS trigger URL for the Gmail ingestor Cloud Function"
 }
 
-output "scheduler_job_name" {
-  value = module.scheduler.scheduler_job_name
-}
-
 output "project_id" {
   value = var.project_id
 }
