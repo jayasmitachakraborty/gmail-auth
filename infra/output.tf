@@ -1,3 +1,11 @@
+output "project_id" {
+  value = var.project_id
+}
+
+output "region" {
+  value = var.region
+}
+
 output "dataset_id" {
   value = module.bigquery.dataset_id
 }
@@ -14,23 +22,15 @@ output "ingestor_sa_email" {
   value = module.iam.ingestor_sa_email
 }
 
-output "gmail_sa_key_secret_id" {
-  value = module.iam.gmail_sa_key_secret_id
+output "gmail_user_token_secret_id" {
+  value = module.iam.gmail_user_token_secret_id
 }
 
 output "cloud_function_name" {
-  value = module.scheduler.cloud_function_name
+  value = module.function.cloud_function_name
 }
 
 output "cloud_function_url" {
-  value       = module.scheduler.cloud_function_url
+  value       = module.function.cloud_function_url
   description = "HTTPS trigger URL for the Gmail ingestor Cloud Function"
-}
-
-output "project_id" {
-  value = var.project_id
-}
-
-output "region" {
-  value = var.region
 }

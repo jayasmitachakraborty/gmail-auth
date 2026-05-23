@@ -3,9 +3,7 @@ version: "1.0.0"
 profile: jobs_pipeline
 
 model-paths: ["models"]
-test-paths: ["tests"]
 macro-paths: ["macros"]
-seed-paths: ["seeds"]
 
 models:
   jobs_pipeline:
@@ -14,7 +12,7 @@ models:
       +materialized: view
     intermediate:
       +schema: gmail_intermediate
-      +materialized: ephemeral       # not persisted, folded into mart query
+      +materialized: ephemeral
     marts:
       +schema: gmail_marts
       +materialized: table

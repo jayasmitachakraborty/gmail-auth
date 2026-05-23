@@ -1,7 +1,7 @@
-"""Gmail API fetch helpers.
+"""Gmail API fetch and transform helpers.
 
-All functions accept an already-built Gmail service object so auth is
-handled once at the call site (run_pipeline.py) and not buried here.
+All public functions take an already-built Gmail service object so auth
+happens once at the call site (see ``run_ingestion.py``).
 """
 
 from __future__ import annotations
@@ -12,8 +12,6 @@ from typing import Iterator
 
 from googleapiclient.discovery import Resource
 
-
-# ── Low-level helpers ─────────────────────────────────────────────────────────
 
 def _decode_base64url(data: str) -> str:
     if not data:
@@ -35,7 +33,7 @@ def _extract_bodies(payload: dict) -> dict[str, str]:
         data = part.get("body", {}).get("data")
         if mime == "text/plain" and data:
             plain_parts.append(_decode_base64url(data))
-        if mime == "text/html" and data:
+        elif mime == "text/html" and data:
             html_parts.append(_decode_base64url(data))
         for child in part.get("parts", []):
             _walk(child)
@@ -47,40 +45,22 @@ def _extract_bodies(payload: dict) -> dict[str, str]:
     }
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
 def iter_message_ids(
     gmail_service: Resource,
     after: datetime.datetime,
     extra_query: str = "in:inbox",
     max_messages: int = 0,
 ) -> Iterator[str]:
-    """Yield Gmail message IDs newer than *after* (full pagination).
+    """Yield Gmail message IDs newer than *after*, paginating fully.
 
-    Parameters
-    ----------
-    gmail_service:
-        Authenticated Gmail API resource.
-    after:
-        Only messages with internalDate >= this timestamp are returned.
-        Passed to Gmail as `after:<unix_epoch>`.
-    extra_query:
-        Additional Gmail search operators (default: ``in:inbox``).
-    max_messages:
-        Hard cap on total messages yielded.  0 = no cap.
+    ``max_messages=0`` means no cap.
     """
-    epoch_secs = int(after.timestamp())
-    query = f"after:{epoch_secs} {extra_query}".strip()
+    query = f"after:{int(after.timestamp())} {extra_query}".strip()
 
     page_token: str | None = None
     yielded = 0
-
     while True:
-        kwargs: dict = dict(
-            userId="me",
-            q=query,
-            maxResults=500,  # API max per page
-        )
+        kwargs: dict = {"userId": "me", "q": query, "maxResults": 500}
         if page_token:
             kwargs["pageToken"] = page_token
 
@@ -94,7 +74,7 @@ def iter_message_ids(
 
         page_token = response.get("nextPageToken")
         if not page_token:
-            break
+            return
 
 
 def get_message(gmail_service: Resource, message_id: str) -> dict:
@@ -108,18 +88,16 @@ def get_message(gmail_service: Resource, message_id: str) -> dict:
 
 
 def transform_message(message: dict) -> dict:
-    """Convert a raw Gmail API message dict into a flat BigQuery row dict."""
+    """Convert a raw Gmail API message dict into a flat BigQuery row."""
     payload = message.get("payload", {})
     headers = _headers_to_dict(payload.get("headers", []))
     bodies = _extract_bodies(payload)
 
-    # internalDate is milliseconds since epoch (string)
-    internal_date_ms = message.get("internalDate")
     received_at: str | None = None
+    internal_date_ms = message.get("internalDate")
     if internal_date_ms:
         ts = datetime.datetime.fromtimestamp(
-            int(internal_date_ms) / 1000,
-            tz=datetime.timezone.utc,
+            int(internal_date_ms) / 1000, tz=datetime.timezone.utc
         )
         received_at = ts.strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
 

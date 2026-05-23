@@ -11,7 +11,7 @@ variable "region" {
 variable "google_credentials_file" {
   type        = string
   default     = ""
-  description = "Path to the terraform-runner SA key JSON (used only by Terraform itself). Leave empty in CI and rely on GOOGLE_CREDENTIALS / ADC instead."
+  description = "Path to the terraform-runner SA key JSON. Leave empty in CI to fall back to GOOGLE_CREDENTIALS / ADC."
 }
 
 variable "location" {
@@ -27,13 +27,6 @@ variable "dataset_id" {
 variable "table_id" {
   type    = string
   default = "gmail_messages"
-}
-
-# ── Ingestion pipeline ────────────────────────────────────────────────────────
-
-variable "gmail_user_email" {
-  type        = string
-  description = "The Gmail address the ingestor SA will impersonate (subject delegation)"
 }
 
 variable "first_run_start_date" {

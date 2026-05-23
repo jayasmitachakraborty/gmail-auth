@@ -1,29 +1,15 @@
-"""Authentication helpers for Cloud Run (Application Default Credentials).
+"""Authentication helpers for BigQuery and Gmail.
 
-The gmail-bigquery-ingestor service account has:
-  - roles/bigquery.dataEditor + roles/bigquery.jobUser  (via Terraform IAM)
-  - Gmail API access via **subject impersonation** using a service account key
-    with domain-wide delegation enabled on the Google Workspace / personal
-    account side.
+BigQuery uses Application Default Credentials (the Cloud Function runtime SA
+in production, ``gcloud auth application-default login`` locally).
 
-How it works on Cloud Run
-──────────────────────────
-google.auth.default() returns the attached runtime SA identity automatically.
-For BigQuery that SA identity is sufficient.
-
-For Gmail the SA must impersonate the target user account (gmail_user_email)
-because Gmail does not allow SA-level access without impersonation.
-We use google.oauth2.service_account.Credentials with subject= for that.
-
-On Cloud Run the SA key is NOT mounted as a file.  Instead, Workload Identity
-/ the metadata server provides ADC.  For Gmail subject impersonation we need
-the raw SA key, which we pass in via the GMAIL_SA_KEY_JSON env var (the full
-JSON string, stored in Secret Manager and injected at deploy time by Terraform).
-
-Local dev
-──────────
-Set GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json and
-GMAIL_SA_KEY_JSON=$(cat /path/to/sa-key.json).
+Gmail uses a long-lived **user OAuth refresh token** because the target is a
+personal ``@gmail.com`` mailbox; consumer Gmail does not support
+service-account domain-wide delegation. The refresh-token JSON lives in
+Secret Manager (``gmail-user-oauth-token``) and is mounted into the function
+as ``GMAIL_USER_TOKEN_JSON``. Mint a new token with
+``ingestion/scripts/get_user_token.py`` and upload via
+``gcloud secrets versions add``.
 """
 
 from __future__ import annotations
@@ -32,8 +18,8 @@ import json
 import os
 
 import google.auth
-from google.auth import impersonated_credentials
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 
 _GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 _BQ_SCOPES = [
@@ -43,39 +29,44 @@ _BQ_SCOPES = [
 
 
 def get_bigquery_credentials():
-    """Return ADC credentials scoped for BigQuery.
-
-    On Cloud Run this is the runtime SA via the metadata server.
-    Locally it uses GOOGLE_APPLICATION_CREDENTIALS.
-    """
+    """Return ADC credentials scoped for BigQuery."""
     credentials, _ = google.auth.default(scopes=_BQ_SCOPES)
     return credentials
 
 
-def get_gmail_credentials(gmail_user_email: str):
-    """Return credentials that impersonate *gmail_user_email* for Gmail API.
+def get_gmail_credentials() -> Credentials:
+    """Return user-OAuth credentials authorised for Gmail readonly.
 
-    Requires the SA key JSON to be available as the GMAIL_SA_KEY_JSON env var
-    (injected from Secret Manager by Terraform at Cloud Run deploy time).
-
-    The SA must have:
-      - The Gmail API enabled in the GCP project.
-      - Domain-wide delegation granted in the Google Workspace admin console
-        (or the personal Google account owner grants access), with the scope
-        https://www.googleapis.com/auth/gmail.readonly whitelisted.
+    Token sources (in order):
+      1. ``GMAIL_USER_TOKEN_JSON`` env var (full JSON; from Secret Manager
+         in production).
+      2. ``GMAIL_USER_TOKEN_PATH`` env var (filesystem path; local dev).
     """
-    key_json = os.environ.get("GMAIL_SA_KEY_JSON")
-    if not key_json:
+    token_json = os.environ.get("GMAIL_USER_TOKEN_JSON")
+    if not token_json:
+        token_path = os.environ.get("GMAIL_USER_TOKEN_PATH")
+        if token_path and os.path.isfile(token_path):
+            with open(token_path, "r", encoding="utf-8") as f:
+                token_json = f.read()
+
+    if not token_json:
         raise EnvironmentError(
-            "GMAIL_SA_KEY_JSON env var is not set. "
-            "On Cloud Run, mount the SA key from Secret Manager. "
-            "Locally, export GMAIL_SA_KEY_JSON=$(cat /path/to/sa-key.json)."
+            "No Gmail user OAuth token found. Set GMAIL_USER_TOKEN_JSON "
+            "(production: Secret Manager 'gmail-user-oauth-token') or "
+            "GMAIL_USER_TOKEN_PATH (local). Mint one with "
+            "ingestion/scripts/get_user_token.py."
         )
 
-    service_account_info = json.loads(key_json)
-    credentials = service_account.Credentials.from_service_account_info(
-        service_account_info,
-        scopes=_GMAIL_SCOPES,
-        subject=gmail_user_email,
-    )
-    return credentials
+    creds = Credentials.from_authorized_user_info(json.loads(token_json), scopes=_GMAIL_SCOPES)
+
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            raise RuntimeError(
+                "Gmail user OAuth credentials are invalid and cannot be "
+                "refreshed. Re-mint with scripts/get_user_token.py and "
+                "update the 'gmail-user-oauth-token' secret."
+            )
+
+    return creds

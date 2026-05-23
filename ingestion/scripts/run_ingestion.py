@@ -2,32 +2,30 @@
 
 Entry points
 ────────────
-Cloud Function (HTTP trigger, invoked from GitHub Actions or ad-hoc):
-    run_pipeline_http(request)   ← set as entry_point in Terraform
+Cloud Function (HTTP, invoked from GitHub Actions or ad-hoc):
+    run_pipeline_http(request)   ← entry_point in Terraform
 
-Local / manual invocation:
-    python scripts/run_pipeline.py               # run ingestion directly
-    python scripts/run_pipeline.py --trigger     # POST to the Cloud Function URL
-    python scripts/run_pipeline.py --backfill    # full backfill (ignores watermark)
+Local / manual:
+    python scripts/run_ingestion.py             # incremental
+    python scripts/run_ingestion.py --backfill  # ignore watermark
+    python scripts/run_ingestion.py --trigger   # POST to deployed function
 
 Environment variables
 ─────────────────────
-Required:
-  GMAIL_USER_EMAIL        Gmail address the ingestor SA will impersonate
-  GMAIL_SA_KEY_JSON       Full SA key JSON (injected from Secret Manager on GCF;
-                          set manually for local dev)
+Required in production:
+  GMAIL_USER_TOKEN_JSON   Gmail user OAuth refresh-token JSON, mounted from
+                          Secret Manager. Mint locally with
+                          scripts/get_user_token.py.
 
-Optional:
-  GCP_PROJECT_ID          Default: jobs-and-career-494813
-  BQ_DATASET_ID           Default: gmail_data
-  BQ_TABLE_ID             Default: gmail_messages
-  FIRST_RUN_START_DATE    Default: 2026-03-01
-  GMAIL_QUERY_EXTRA       Default: in:inbox
-  MAX_MESSAGES_PER_RUN    Default: 0 (unlimited)
+Local-only alternative:
+  GMAIL_USER_TOKEN_PATH   Filesystem path to the same JSON.
 
-For --trigger (manual Cloud Function invoke from your shell):
-  FUNCTION_URL            HTTPS URL of the deployed Cloud Function
-                          (printed by `terraform output cloud_function_url`)
+Optional (see settings.py for defaults):
+  GCP_PROJECT_ID, BQ_DATASET_ID, BQ_TABLE_ID, FIRST_RUN_START_DATE,
+  GMAIL_QUERY_EXTRA, MAX_MESSAGES_PER_RUN
+
+For --trigger:
+  FUNCTION_URL            HTTPS URL of the deployed Cloud Function.
 """
 
 from __future__ import annotations
@@ -46,33 +44,26 @@ from gmail_ingestion.load import insert_rows
 from gmail_ingestion.settings import get_settings
 from gmail_ingestion.watermark import get_sync_start
 
+_BATCH_SIZE = 500
 
-# ── Core pipeline ─────────────────────────────────────────────────────────────
 
 def run_pipeline(full_backfill: bool = False) -> dict:
-    """Execute the Gmail → BigQuery sync.  Returns a summary dict."""
+    """Execute the Gmail → BigQuery sync. Returns a summary dict."""
     s = get_settings()
 
-    bq_client = bigquery.Client(
-        credentials=get_bigquery_credentials(),
-        project=s.project_id,
-    )
-    gmail_creds = get_gmail_credentials(s.gmail_user_email)
-    gmail_service = build("gmail", "v1", credentials=gmail_creds)
+    bq_client = bigquery.Client(credentials=get_bigquery_credentials(), project=s.project_id)
+    gmail_service = build("gmail", "v1", credentials=get_gmail_credentials())
 
-    # Determine sync window
     if full_backfill:
         floor = s.first_run_start_date
         sync_start = datetime.datetime(
-            floor.year, floor.month, floor.day,
-            tzinfo=datetime.timezone.utc,
+            floor.year, floor.month, floor.day, tzinfo=datetime.timezone.utc
         )
         print(f"FULL_BACKFILL — syncing from {sync_start.date()} (ignoring watermark).")
     else:
         sync_start = get_sync_start(bq_client)
         print(f"Incremental sync — fetching messages after {sync_start.isoformat()}.")
 
-    # Fetch, transform, and stream-insert in rolling batches
     rows: list[dict] = []
     fetched = 0
     inserted = 0
@@ -83,11 +74,10 @@ def run_pipeline(full_backfill: bool = False) -> dict:
         extra_query=s.gmail_query_extra,
         max_messages=s.max_messages_per_run,
     ):
-        message = get_message(gmail_service, message_id)
-        rows.append(transform_message(message))
+        rows.append(transform_message(get_message(gmail_service, message_id)))
         fetched += 1
 
-        if len(rows) >= 500:
+        if len(rows) >= _BATCH_SIZE:
             inserted += insert_rows(bq_client, rows)
             rows = []
 
@@ -104,42 +94,25 @@ def run_pipeline(full_backfill: bool = False) -> dict:
     return summary
 
 
-# ── Cloud Function HTTP entry point ───────────────────────────────────────────
-
 def run_pipeline_http(request) -> tuple[str, int]:
-    """HTTP handler — invoked over authenticated POST (GitHub Actions or ad-hoc).
+    """HTTP handler invoked by Cloud Functions over authenticated POST.
 
-    functions-framework passes a Werkzeug Request object; we only need
-    request.get_json() from it so there is no Flask import required.
-    The framework itself (already a dependency via functions-framework) bundles
-    Werkzeug and handles all HTTP plumbing — this function just returns a
-    (body_str, status_code) tuple which the framework serialises for us.
-
-    Callers can POST {"full_backfill": true} to force a full re-sync.
-    Returns 200 on success, 500 on error.
+    POST ``{"full_backfill": true}`` to force a full re-sync. Returns 200 on
+    success and 500 on error.
     """
     try:
         body = request.get_json(silent=True) or {}
         full_backfill = str(body.get("full_backfill", "")).lower() == "true"
-        summary = run_pipeline(full_backfill=full_backfill)
-        return json.dumps(summary), 200
+        return json.dumps(run_pipeline(full_backfill=full_backfill)), 200
     except Exception as exc:
-        error_body = {"status": "error", "message": str(exc)}
         print(f"ERROR: {exc}", file=sys.stderr)
-        return json.dumps(error_body), 500
+        return json.dumps({"status": "error", "message": str(exc)}), 500
 
-
-# ── CLI — local run or manual function trigger ────────────────────────────────
 
 def _trigger_cloud_function() -> None:
-    """POST to the deployed Cloud Function URL using ADC credentials.
+    """POST to the deployed Cloud Function URL using ADC credentials."""
+    import urllib.request
 
-    Use this to manually kick off a run from your shell, e.g. after a deploy
-    or to test in production:
-
-        python scripts/run_pipeline.py --trigger
-    """
-    import google.auth
     import google.auth.transport.requests
     from google.oauth2 import id_token
 
@@ -152,17 +125,10 @@ def _trigger_cloud_function() -> None:
         )
         sys.exit(1)
 
-    import urllib.request
-    import json
-
-    # Obtain an OIDC token for the function URL audience
-    auth_req = google.auth.transport.requests.Request()
-    token = id_token.fetch_id_token(auth_req, function_url)
-
-    payload = json.dumps({"source": "manual-cli"}).encode()
+    token = id_token.fetch_id_token(google.auth.transport.requests.Request(), function_url)
     req = urllib.request.Request(
         function_url,
-        data=payload,
+        data=json.dumps({"source": "manual-cli"}).encode(),
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -170,8 +136,7 @@ def _trigger_cloud_function() -> None:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
-        body = resp.read().decode()
-        print(f"HTTP {resp.status}: {body}")
+        print(f"HTTP {resp.status}: {resp.read().decode()}")
 
 
 if __name__ == "__main__":
@@ -182,7 +147,7 @@ if __name__ == "__main__":
     group.add_argument(
         "--trigger",
         action="store_true",
-        help="POST to the deployed Cloud Function (set FUNCTION_URL env var)",
+        help="POST to the deployed Cloud Function (set FUNCTION_URL)",
     )
     group.add_argument(
         "--backfill",

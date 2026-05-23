@@ -1,0 +1,20 @@
+jobs_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: <your-project>
+      dataset: gmail_staging
+      keyfile: /abs/path/to/creds/key.json
+      location: US
+      threads: 4
+      timeout_seconds: 300
+    prod:
+      type: bigquery
+      method: service-account
+      project: <your-project>
+      dataset: gmail_staging
+      keyfile: "{{ env_var('DBT_SA_KEYFILE') }}"
+      location: US
+      threads: 8

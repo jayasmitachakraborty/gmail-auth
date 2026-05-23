@@ -7,9 +7,14 @@ recruiter outreach, networking).
 The pipeline runs on **Cloud Functions v2** and is triggered on demand from a
 **GitHub Actions** workflow (`workflow_dispatch`). The same workflow then runs
 `dbt build` against the freshly-loaded rows. All GCP resources are provisioned
-by **Terraform**. The Gmail ingestor service account impersonates the target
-Gmail user via domain-wide delegation, using a service-account key stored in
-Secret Manager.
+by **Terraform**.
+
+Gmail is accessed with a **user OAuth refresh token** (not service-account
+domain-wide delegation), because the target mailbox is a personal `@gmail.com`
+account. Consumer Gmail does not support service-account impersonation. The
+refresh token is minted once locally and stored in **Secret Manager**; the
+Cloud Function reads it at runtime and the google-auth library refreshes the
+short-lived access token automatically.
 
 ## Architecture
 
@@ -29,8 +34,8 @@ Secret Manager.
               ▼                       ▼
       ┌──────────────┐         ┌──────────────┐
       │   Gmail API  │         │   BigQuery   │
-      │ (subject     │         │ gmail_data.  │
-      │  impersonat.)│         │ gmail_messages│
+      │ (user OAuth  │         │ gmail_data.  │
+      │  refresh tok)│         │ gmail_messages│
       └──────────────┘         └──────┬───────┘
                                       │
                                       ▼
@@ -54,23 +59,25 @@ Secret Manager.
 ```
 gmail-auth/
 ├── ingestion/                       # Cloud Function source (Python)
+│   ├── main.py                      # Cloud Function entry-point shim
 │   ├── src/gmail_ingestion/
-│   │   ├── auth.py                  # ADC + Gmail subject impersonation
+│   │   ├── auth.py                  # ADC for BigQuery + user-OAuth for Gmail
 │   │   ├── fetch.py                 # Gmail API list/get/transform
 │   │   ├── load.py                  # BigQuery dedup + streaming insert
 │   │   ├── watermark.py             # MAX(received_at) lookup
 │   │   └── settings.py              # Pydantic settings from env vars
-│   ├── scripts/run_ingestion.py     # Cloud Function entry + local CLI
+│   ├── scripts/run_ingestion.py     # Pipeline orchestration + local CLI
+│   ├── scripts/get_user_token.py    # One-off OAuth flow to mint refresh token
 │   └── requirements.txt
 ├── infra/                           # Terraform (GCP)
-│   ├── main.tf                      # Wires bigquery / iam / scheduler modules
+│   ├── main.tf                      # Wires bigquery / iam / function modules
 │   ├── variables.tf, output.tf, versions.tf
 │   ├── terraform.tfvars             # local overrides (gitignored)
 │   ├── schemas/gmail_messages.json  # BQ table schema
 │   └── modules/
 │       ├── bigquery/                # Datasets + raw landing table
-│       ├── iam/                     # SAs, IAM, SA key in Secret Manager
-│       └── scheduler/               # Cloud Function v2 (legacy folder name)
+│       ├── iam/                     # SAs, IAM, OAuth-token Secret Manager
+│       └── function/                # Cloud Function v2 + source GCS bucket
 ├── dbt/                             # dbt-bigquery project (jobs_pipeline)
 │   ├── dbt_project.yml
 │   ├── profiles.yml                 # gitignored
@@ -100,14 +107,16 @@ All three are managed in `infra/modules/iam/main.tf`.
 
 | Service account | Purpose | Roles |
 |---|---|---|
-| `terraform-runner` | Runs Terraform itself (you create this manually before first `apply`). Also used as the `GCP_SA_KEY` identity in GitHub Actions, so it must be able to invoke the Cloud Function. | `roles/iam.serviceAccountAdmin`, `roles/bigquery.admin`, `roles/serviceusage.serviceUsageAdmin`, `roles/resourcemanager.projectIamAdmin`, `roles/secretmanager.admin`, `roles/cloudfunctions.admin`, `roles/run.admin`, `roles/storage.admin` (the `cloudfunctions.admin` + `run.admin` pair grants the `invoke` permission needed by the workflow) |
-| `gmail-bq-ingestor` | Runtime identity of the Cloud Function | `roles/bigquery.dataEditor`, `roles/bigquery.jobUser`, `roles/bigquery.dataViewer`, `roles/secretmanager.secretAccessor` (on the Gmail SA key secret) |
+| `terraform-runner` | Runs Terraform itself (created manually before first `apply`). Also used as the `GCP_SA_KEY` identity in GitHub Actions to invoke the Cloud Function. | `roles/iam.serviceAccountAdmin`, `roles/iam.serviceAccountUser`, `roles/resourcemanager.projectIamAdmin`, `roles/serviceusage.serviceUsageAdmin`, `roles/bigquery.admin`, `roles/storage.admin`, `roles/secretmanager.admin`, `roles/cloudfunctions.developer`, `roles/run.admin` (the `cloudfunctions.developer` + `run.admin` pair grants invoke permission used by the workflow) |
+| `gmail-bq-ingestor` | Runtime identity of the Cloud Function | `roles/bigquery.dataEditor`, `roles/bigquery.jobUser`, `roles/bigquery.dataViewer`, `roles/secretmanager.secretAccessor` on `gmail-user-oauth-token` |
 | `dbt-runner` | Used by CI / local dbt runs | `roles/bigquery.dataEditor`, `roles/bigquery.jobUser` |
 
-The `gmail-bq-ingestor` SA key is generated by Terraform and immediately
-written to **Secret Manager** as `gmail-ingestor-sa-key`. The Cloud Function
-mounts it as `GMAIL_SA_KEY_JSON` — the raw key is never exposed as a plain env
-var.
+The Gmail user OAuth refresh token is stored in **Secret Manager** as
+`gmail-user-oauth-token`. The Cloud Function mounts it at runtime as the
+`GMAIL_USER_TOKEN_JSON` env var — the token itself never appears in
+Terraform state, plain env vars, or function logs. Terraform owns the
+secret resource; the version (the actual token bytes) is added
+out-of-band by the operator (`gcloud secrets versions add`).
 
 ## Prerequisites
 
@@ -122,22 +131,50 @@ var.
 3. Create the `terraform-runner` SA in *IAM & Admin → IAM*, grant it the roles
    in the table above, and download a JSON key to `creds/key.json`.
 
-### 2. Gmail domain-wide delegation
+### 2. Gmail user OAuth setup
 
-The `gmail-bq-ingestor` SA cannot read Gmail without **subject impersonation**.
+The mailbox is a personal `@gmail.com` account, so the function authenticates
+to Gmail with a **user OAuth refresh token** rather than service-account
+delegation.
 
-For a **personal Gmail** account: in the Google Cloud Console, create an OAuth
-consent screen, then on the SA's *Keys* page enable *domain-wide delegation*
-and grant the scope `https://www.googleapis.com/auth/gmail.readonly` to the
-SA's client ID. For **Google Workspace**, the workspace admin does this in
-*Admin Console → Security → API controls → Domain-wide delegation*.
+1. In Google Cloud Console → **APIs & Services → Credentials**, create an
+   **OAuth 2.0 Client ID** of type *Desktop app*. Download its JSON to
+   `creds/credentials.json`.
+2. On the **OAuth consent screen**, add the target Gmail address as a *Test
+   user*. (See the “Token lifetime” caveat below — published apps get
+   non-expiring refresh tokens, test apps refresh every 7 days.)
+3. Add the Gmail readonly scope:
+   `https://www.googleapis.com/auth/gmail.readonly`.
+4. Mint the refresh token locally:
 
-Set the target Gmail address in `infra/terraform.tfvars`:
+   ```bash
+   .venv/bin/python ingestion/scripts/get_user_token.py
+   ```
+
+   A browser will open. Sign in as the target Gmail user and approve the
+   read-only Gmail scope. The script writes the resulting JSON to
+   `creds/tokens.json`.
+5. After running `terraform apply`, upload the token as a secret version:
+
+   ```bash
+   gcloud secrets versions add gmail-user-oauth-token \
+       --project=<your-project> \
+       --data-file=creds/tokens.json
+   ```
+
+Set the operator-facing values in `infra/terraform.tfvars`:
 
 ```hcl
-gmail_user_email = "you@example.com"
+project_id              = "<your-project>"
 google_credentials_file = "/abs/path/to/creds/key.json"
 ```
+
+**Token lifetime.** Google issues *non-expiring* refresh tokens only when the
+OAuth consent screen is in *Production* and (for sensitive scopes like
+Gmail) the app has been verified. For an unverified app in *Testing*, the
+refresh token expires after 7 days and you have to re-mint it. Re-running
+`get_user_token.py` plus a fresh `gcloud secrets versions add` is enough —
+the function reads the `latest` version on every cold start.
 
 ## Provision infrastructure
 
@@ -155,11 +192,10 @@ terraform output cloud_function_url    # HTTPS trigger URL
 terraform output bigquery_table        # <project>.gmail_data.gmail_messages
 ```
 
-The `scheduler` module (legacy name — it no longer creates Cloud Scheduler
-resources, only the Cloud Function) zips `ingestion/` at plan time via the
-`archive_file` data source and uploads it to a GCS staging bucket
-(`<project>-gcf-source`), then deploys the Cloud Function. Subsequent
-`terraform apply` runs re-zip and re-deploy whenever ingestion code changes.
+The `function` module zips `ingestion/` at plan time via the `archive_file`
+data source and uploads it to a GCS staging bucket (`<project>-gcf-source`),
+then deploys the Cloud Function. Subsequent `terraform apply` runs re-zip
+and re-deploy whenever ingestion code changes.
 
 ## Running the ingestion
 
@@ -184,7 +220,7 @@ What it does:
 The workflow uses the `GCP_SA_KEY` secret (same key already used by `ci.yml`).
 The underlying SA needs `cloudfunctions.invoker` + `run.invoker` on the
 function — the `terraform-runner` role bundle already provides this.
-xs
+
 ### Manually invoke the Cloud Function from your shell
 
 Useful for re-running with custom args or when iterating on the function code:
@@ -214,9 +250,12 @@ cd ingestion
 bash scripts/setup_venv.sh
 source .venv/bin/activate
 
+# BigQuery: use any SA key with bigquery.dataEditor + jobUser
 export GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/../creds/key.json
-export GMAIL_USER_EMAIL=you@example.com
-export GMAIL_SA_KEY_JSON="$(cat ../creds/gmail-bq-ingestor-key.json)"
+
+# Gmail: point at the locally-minted user OAuth token (alternative to
+# uploading it to Secret Manager).
+export GMAIL_USER_TOKEN_PATH=$(pwd)/../creds/tokens.json
 
 python scripts/run_ingestion.py              # incremental
 python scripts/run_ingestion.py --backfill   # ignore watermark, full re-sync
@@ -232,8 +271,8 @@ are read from env vars / `.env`.
 | `GCP_PROJECT_ID` / `PROJECT_ID` | `jobs-and-career-494813` | GCP project |
 | `BQ_DATASET_ID` / `DATASET_ID` | `gmail_data` | Raw landing dataset |
 | `BQ_TABLE_ID` / `TABLE_ID` | `gmail_messages` | Raw landing table |
-| `GMAIL_USER_EMAIL` | *(required)* | Address the SA impersonates |
-| `GMAIL_SA_KEY_JSON` | *(required)* | SA key JSON string (Secret Manager-injected on GCF) |
+| `GMAIL_USER_TOKEN_JSON` | *(required on GCF)* | User OAuth refresh-token JSON. Mounted from the `gmail-user-oauth-token` Secret Manager secret. |
+| `GMAIL_USER_TOKEN_PATH` | *(local dev only)* | Filesystem path to the same JSON, used instead of inlining via `GMAIL_USER_TOKEN_JSON`. |
 | `FIRST_RUN_START_DATE` | `2026-03-01` | Watermark floor for the first run |
 | `GMAIL_QUERY_EXTRA` | `in:inbox` | Extra Gmail search operators |
 | `MAX_MESSAGES_PER_RUN` | `0` | Safety cap; `0` = unlimited |
@@ -311,26 +350,36 @@ the function).
 - **Never commit `creds/`.** The repo's `.gitignore` excludes `creds/`,
   `*-key.json`, `service-account*.json`, `client_secret*.json`,
   `tokens.json`, `.env*`, `*.tfvars`, and `*.tfstate*`.
-- The Gmail SA key is stored only in **Secret Manager** in production. The
-  local copy under `creds/` is for dev only.
+- The Gmail user OAuth token is stored only in **Secret Manager** in
+  production. The local copy under `creds/tokens.json` is for dev only and
+  must not be committed.
+- The OAuth refresh token grants read-only Gmail access for the consenting
+  user. Treat it like a password. To revoke, delete the secret version (or
+  remove the consent at <https://myaccount.google.com/permissions>).
 - `dbt/profiles.yml` is gitignored — only `profiles.yml.example` is committed.
 - Terraform state is local (`infra/.terraform/`) and gitignored. Move it to a
   GCS backend before sharing the project with multiple operators.
 
 ## Troubleshooting
 
-- **`GMAIL_SA_KEY_JSON env var is not set`** — locally, export the SA key JSON
-  string before running. On Cloud Function, ensure Terraform applied the
-  `secret_environment_variables` block.
-- **`403 Domain-Wide Delegation … not authorized`** — the SA's client ID is
-  not whitelisted for `gmail.readonly`. Re-do the delegation step in the
-  Workspace / personal account admin UI.
+- **`No Gmail user OAuth token found`** — locally, set `GMAIL_USER_TOKEN_PATH`
+  (or `GMAIL_USER_TOKEN_JSON`) before running. On Cloud Functions, ensure
+  Terraform applied the `secret_environment_variables` block and that you
+  added a version to `gmail-user-oauth-token` with `gcloud secrets versions
+  add`. The function reads `latest` on each cold start.
+- **`unauthorized_client` from Google's OAuth token endpoint** — the OAuth
+  client ID baked into the refresh token has been deleted/disabled, or the
+  Gmail readonly scope was removed from the consent screen. Re-mint the
+  token with `scripts/get_user_token.py` and upload a new secret version.
+- **`invalid_grant` on refresh** — the refresh token was revoked or expired.
+  Most often this is the 7-day expiry for tokens minted from a *Testing*
+  consent screen (see “Token lifetime” above). Re-mint and re-upload.
 - **First run inserts 0 rows** — check `FIRST_RUN_START_DATE`; it gates how
   far back the initial backfill goes. Use `--backfill` to force.
 - **Watermark not advancing** — the watermark is derived from
-  `MAX(received_at)` in BigQuery, not from anything Terraform-managed. If the
-  table is empty after a failed first run, the next run will re-start from
-  `FIRST_RUN_START_DATE`.
+  `MAX(received_at)` in BigQuery, not from anything Terraform-managed. If
+  the table is empty after a failed first run, the next run will re-start
+  from `FIRST_RUN_START_DATE`.
 
 ## Useful console links
 

@@ -3,10 +3,18 @@ variable "dbt_sa_account_id" { type = string }
 variable "ingestion_sa_account_id" { type = string }
 variable "bq_dataset_id" { type = string }
 
-# ── Enable required APIs ──────────────────────────────────────────────────────
+# terraform-runner is created manually (see README) — its bindings are
+# declared here so they're auditable in code rather than only in the console.
+variable "terraform_runner_sa_account_id" {
+  type    = string
+  default = "terraform-runner"
+}
 
-# All APIs are disabled on destroy so the project is left fully torn down.
-# This is safe because the project is dedicated to the gmail-auth pipeline.
+locals {
+  terraform_runner_sa_email = "${var.terraform_runner_sa_account_id}@${var.project_id}.iam.gserviceaccount.com"
+}
+
+# ── Required APIs (all disabled on destroy so the project fully tears down) ──
 
 resource "google_project_service" "iam" {
   project            = var.project_id
@@ -38,15 +46,15 @@ resource "google_project_service" "cloudbuild" {
   disable_on_destroy = true
 }
 
-# Cloud Functions v2 implicitly enables Artifact Registry to store build
-# images. Declare it explicitly so it is also disabled on destroy.
+# Cloud Functions v2 implicitly enables Artifact Registry; declare it so it's
+# also disabled on destroy.
 resource "google_project_service" "artifactregistry" {
   project            = var.project_id
   service            = "artifactregistry.googleapis.com"
   disable_on_destroy = true
 }
 
-# ── dbt runner SA ─────────────────────────────────────────────────────────────
+# ── dbt runner SA ────────────────────────────────────────────────────────────
 
 resource "google_service_account" "dbt_runner" {
   account_id   = var.dbt_sa_account_id
@@ -67,10 +75,9 @@ resource "google_project_iam_member" "dbt_bq_job_user" {
   member  = "serviceAccount:${google_service_account.dbt_runner.email}"
 }
 
-# ── Gmail ingestor SA ─────────────────────────────────────────────────────────
-# This SA is the runtime identity of the Cloud Function.
-# It also impersonates the Gmail user via domain-wide delegation using
-# a key stored in Secret Manager
+# ── Gmail ingestor SA (Cloud Function runtime identity) ──────────────────────
+# Used for BigQuery via ADC and for reading the OAuth-token secret.
+# Gmail itself is accessed with a user OAuth refresh token (see auth.py).
 
 resource "google_service_account" "gmail_ingestor" {
   account_id   = var.ingestion_sa_account_id
@@ -79,49 +86,40 @@ resource "google_service_account" "gmail_ingestor" {
   depends_on   = [google_project_service.iam]
 }
 
-# BigQuery: write rows
 resource "google_project_iam_member" "gmail_ingestor_bq_data_editor" {
   project = var.project_id
   role    = "roles/bigquery.dataEditor"
   member  = "serviceAccount:${google_service_account.gmail_ingestor.email}"
 }
 
-# BigQuery: run query jobs (watermark SELECT, dedup SELECT)
 resource "google_project_iam_member" "gmail_ingestor_bq_job_user" {
   project = var.project_id
   role    = "roles/bigquery.jobUser"
   member  = "serviceAccount:${google_service_account.gmail_ingestor.email}"
 }
 
-# BigQuery: read table data for dedup guard
+# Read table data for the dedup guard
 resource "google_project_iam_member" "gmail_ingestor_bq_data_viewer" {
   project = var.project_id
   role    = "roles/bigquery.dataViewer"
   member  = "serviceAccount:${google_service_account.gmail_ingestor.email}"
 }
 
-# Secret Manager: read the Gmail SA key at function runtime
-resource "google_secret_manager_secret_iam_member" "ingestor_gmail_key_access" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.gmail_sa_key.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.gmail_ingestor.email}"
-
-  depends_on = [google_secret_manager_secret.gmail_sa_key]
+resource "google_secret_manager_secret_iam_member" "ingestor_gmail_token_access" {
+  project    = var.project_id
+  secret_id  = google_secret_manager_secret.gmail_user_oauth_token.secret_id
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.gmail_ingestor.email}"
+  depends_on = [google_secret_manager_secret.gmail_user_oauth_token]
 }
 
-# ── SA key → Secret Manager ───────────────────────────────────────────────────
-# The key is used for Gmail subject impersonation (domain-wide delegation).
-# It is stored in Secret Manager so it never appears in plaintext in env vars
-# or Terraform plan output.
+# ── Gmail user OAuth token secret ────────────────────────────────────────────
+# Versions (the actual token bytes) are added out-of-band by the operator
+# (`gcloud secrets versions add`) so refresh-token material never enters TF state.
 
-resource "google_service_account_key" "gmail_ingestor_key" {
-  service_account_id = google_service_account.gmail_ingestor.name
-}
-
-resource "google_secret_manager_secret" "gmail_sa_key" {
+resource "google_secret_manager_secret" "gmail_user_oauth_token" {
   project   = var.project_id
-  secret_id = "gmail-ingestor-sa-key"
+  secret_id = "gmail-user-oauth-token"
 
   replication {
     auto {}
@@ -135,12 +133,40 @@ resource "google_secret_manager_secret" "gmail_sa_key" {
   depends_on = [google_project_service.secretmanager]
 }
 
-resource "google_secret_manager_secret_version" "gmail_sa_key_v1" {
-  secret      = google_secret_manager_secret.gmail_sa_key.id
-  secret_data = base64decode(google_service_account_key.gmail_ingestor_key.private_key)
+# ── terraform-runner project-level roles ─────────────────────────────────────
+# Bootstrap order: the very first apply needs these granted manually
+# (gcloud add-iam-policy-binding) because Terraform cannot grant itself
+# permissions it does not yet have.
+
+locals {
+  terraform_runner_project_roles = toset([
+    "roles/iam.serviceAccountAdmin",
+    "roles/iam.serviceAccountUser",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/serviceusage.serviceUsageAdmin",
+    "roles/bigquery.admin",
+    "roles/storage.admin",
+    "roles/secretmanager.admin",
+    "roles/cloudfunctions.developer",
+    "roles/run.admin",
+  ])
 }
 
-# ── Outputs ───────────────────────────────────────────────────────────────────
+resource "google_project_iam_member" "terraform_runner" {
+  for_each = local.terraform_runner_project_roles
+  project  = var.project_id
+  role     = each.value
+  member   = "serviceAccount:${local.terraform_runner_sa_email}"
+}
+
+# Allow terraform-runner to attach the ingestor SA to the Cloud Function.
+resource "google_service_account_iam_member" "terraform_runner_actas_ingestor" {
+  service_account_id = google_service_account.gmail_ingestor.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${local.terraform_runner_sa_email}"
+}
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
 
 output "ingestor_sa_email" {
   value = google_service_account.gmail_ingestor.email
@@ -150,6 +176,6 @@ output "ingestor_sa_name" {
   value = google_service_account.gmail_ingestor.name
 }
 
-output "gmail_sa_key_secret_id" {
-  value = google_secret_manager_secret.gmail_sa_key.secret_id
+output "gmail_user_token_secret_id" {
+  value = google_secret_manager_secret.gmail_user_oauth_token.secret_id
 }

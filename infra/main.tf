@@ -1,9 +1,8 @@
 provider "google" {
   project = var.project_id
   region  = var.region
-  # When google_credentials_file is set (local dev), read the key from disk.
-  # When empty (CI), fall back to the provider's env-var resolution
-  # (GOOGLE_CREDENTIALS / GOOGLE_APPLICATION_CREDENTIALS / ADC).
+  # Local dev reads a key from disk; CI leaves this empty and uses
+  # GOOGLE_CREDENTIALS / GOOGLE_APPLICATION_CREDENTIALS / ADC.
   credentials = var.google_credentials_file != "" ? file(var.google_credentials_file) : null
 }
 
@@ -24,19 +23,17 @@ module "iam" {
   bq_dataset_id           = var.dataset_id
 }
 
-module "scheduler" {
-  source     = "./modules/scheduler"
+module "function" {
+  source     = "./modules/function"
   project_id = var.project_id
   region     = var.region
 
-  ingestor_sa_email      = module.iam.ingestor_sa_email
-  gmail_sa_key_secret_id = module.iam.gmail_sa_key_secret_id
+  ingestor_sa_email          = module.iam.ingestor_sa_email
+  gmail_user_token_secret_id = module.iam.gmail_user_token_secret_id
 
-  gmail_user_email     = var.gmail_user_email
   first_run_start_date = var.first_run_start_date
   gmail_query_extra    = var.gmail_query_extra
 
-  # BigQuery table the function reads/writes
   bq_dataset_id = var.dataset_id
   bq_table_id   = var.table_id
 }

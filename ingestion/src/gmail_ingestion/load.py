@@ -1,8 +1,8 @@
 """BigQuery load helpers.
 
-Rows are inserted via the streaming insert API in configurable batches.
-A dedup guard filters out message_ids already present in BigQuery so
-re-runs are idempotent even if the watermark overlaps slightly.
+Rows are streamed in batches via ``insert_rows_json``. Before each batch we
+drop any ``message_id`` already present in the destination table so reruns
+and watermark overlap are idempotent.
 """
 
 from __future__ import annotations
@@ -23,14 +23,15 @@ def _existing_message_ids(
         return set()
 
     s = get_settings()
-    # Parameterised query — safe against injection.
-    placeholders = ", ".join(f"'{mid}'" for mid in candidate_ids)
     query = f"""
         SELECT message_id
         FROM `{s.bq_table_id}`
-        WHERE message_id IN ({placeholders})
+        WHERE message_id IN UNNEST(@ids)
     """
-    rows = list(client.query(query).result())
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", candidate_ids)]
+    )
+    rows = client.query(query, job_config=job_config).result()
     return {row.message_id for row in rows}
 
 
@@ -44,7 +45,6 @@ def insert_rows(client: bigquery.Client, rows: list[dict]) -> int:
 
     s = get_settings()
 
-    # Dedup: check which message_ids already exist
     candidate_ids = [r["message_id"] for r in rows if r.get("message_id")]
     already_present = _existing_message_ids(client, candidate_ids)
 
@@ -57,7 +57,6 @@ def insert_rows(client: bigquery.Client, rows: list[dict]) -> int:
     if skipped:
         print(f"Skipping {skipped} duplicate message(s) already in BigQuery.")
 
-    # Insert in batches to stay within API limits
     inserted_total = 0
     for i in range(0, len(new_rows), _INSERT_BATCH_SIZE):
         batch = new_rows[i : i + _INSERT_BATCH_SIZE]
