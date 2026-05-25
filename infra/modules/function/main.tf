@@ -30,6 +30,12 @@ variable "function_memory" {
   description = "Memory allocated to the Cloud Function v2 service"
 }
 
+variable "function_cpu" {
+  type        = string
+  default     = "1"
+  description = "vCPU allocated to the function. Cloud Run requires >=1 vCPU for memory above 512Mi."
+}
+
 resource "google_storage_bucket" "function_source" {
   name                        = "${var.project_id}-gcf-source"
   location                    = var.region
@@ -90,6 +96,7 @@ resource "google_cloudfunctions2_function" "gmail_ingestor" {
     service_account_email = var.ingestor_sa_email
     timeout_seconds       = var.function_timeout_seconds
     available_memory      = var.function_memory
+    available_cpu         = var.function_cpu
     max_instance_count    = 1 # serialise runs
 
     environment_variables = {

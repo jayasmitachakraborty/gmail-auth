@@ -45,3 +45,9 @@ variable "function_memory" {
   default     = "1Gi"
   description = "Memory allocated to the Gmail ingestion Cloud Function"
 }
+
+variable "function_cpu" {
+  type        = string
+  default     = "1"
+  description = "vCPU allocated to the Gmail ingestion Cloud Function (>=1 required for memory above 512Mi)"
+}

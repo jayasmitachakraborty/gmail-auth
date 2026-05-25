@@ -34,6 +34,7 @@ module "function" {
   first_run_start_date = var.first_run_start_date
   gmail_query_extra    = var.gmail_query_extra
   function_memory      = var.function_memory
+  function_cpu         = var.function_cpu
 
   bq_dataset_id = var.dataset_id
   bq_table_id   = var.table_id
