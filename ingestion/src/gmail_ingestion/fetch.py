@@ -87,8 +87,19 @@ def get_message(gmail_service: Resource, message_id: str) -> dict:
     )
 
 
-def transform_message(message: dict) -> dict:
-    """Convert a raw Gmail API message dict into a flat BigQuery row."""
+def _truncate(s: str, limit: int) -> str:
+    if limit and s and len(s) > limit:
+        return s[:limit]
+    return s
+
+
+def transform_message(message: dict, max_body_chars: int = 0) -> dict:
+    """Convert a raw Gmail API message dict into a flat BigQuery row.
+
+    ``max_body_chars`` truncates ``plain_body`` / ``html_body`` to defend
+    against multi-MB emails breaching the function's memory ceiling and
+    BigQuery's per-row size limit. ``0`` disables truncation.
+    """
     payload = message.get("payload", {})
     headers = _headers_to_dict(payload.get("headers", []))
     bodies = _extract_bodies(payload)
@@ -110,8 +121,8 @@ def transform_message(message: dict) -> dict:
         "recipient": headers.get("to"),
         "date": headers.get("date"),
         "snippet": message.get("snippet"),
-        "plain_body": bodies["plain_body"],
-        "html_body": bodies["html_body"],
+        "plain_body": _truncate(bodies["plain_body"], max_body_chars),
+        "html_body": _truncate(bodies["html_body"], max_body_chars),
         "labels": ",".join(message.get("labelIds", [])),
         "received_at": received_at,
         "ingested_at": datetime.datetime.now(datetime.timezone.utc).strftime(

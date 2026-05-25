@@ -26,7 +26,7 @@ variable "function_timeout_seconds" {
 
 variable "function_memory" {
   type        = string
-  default     = "1Gi"
+  default     = "2Gi"
   description = "Memory allocated to the Cloud Function v2 service"
 }
 

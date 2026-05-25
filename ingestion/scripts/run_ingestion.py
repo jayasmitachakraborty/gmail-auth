@@ -31,6 +31,7 @@ For --trigger:
 from __future__ import annotations
 
 import datetime
+import gc
 import json
 import os
 import sys
@@ -72,15 +73,22 @@ def run_pipeline(full_backfill: bool = False) -> dict:
         extra_query=s.gmail_query_extra,
         max_messages=s.max_messages_per_run,
     ):
-        rows.append(transform_message(get_message(gmail_service, message_id)))
+        message = get_message(gmail_service, message_id)
+        rows.append(transform_message(message, max_body_chars=s.max_body_chars))
+        # Drop the raw payload as soon as it's flattened — Gmail responses
+        # carry base64 attachment bytes that bloat the heap otherwise.
+        del message
         fetched += 1
 
         if len(rows) >= s.ingest_batch_size:
             inserted += insert_rows(bq_client, rows)
-            rows = []
+            rows.clear()
+            gc.collect()
 
     if rows:
         inserted += insert_rows(bq_client, rows)
+        rows.clear()
+        gc.collect()
 
     summary = {
         "status": "ok",

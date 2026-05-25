@@ -276,7 +276,8 @@ are read from env vars / `.env`.
 | `FIRST_RUN_START_DATE` | `2026-03-01` | Watermark floor for the first run |
 | `GMAIL_QUERY_EXTRA` | `in:inbox` | Extra Gmail search operators |
 | `MAX_MESSAGES_PER_RUN` | `0` | Safety cap; `0` = unlimited |
-| `INGEST_BATCH_SIZE` | `100` | Number of full Gmail messages buffered before each BigQuery insert |
+| `INGEST_BATCH_SIZE` | `50` | Number of full Gmail messages buffered before each BigQuery insert |
+| `MAX_BODY_CHARS` | `512000` | Per-message body truncation (`plain_body` + `html_body`). `0` disables. |
 
 ## dbt models
 

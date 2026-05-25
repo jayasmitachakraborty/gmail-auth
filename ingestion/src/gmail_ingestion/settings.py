@@ -58,8 +58,14 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("MAX_MESSAGES_PER_RUN", "MAX_MESSAGES"),
     )
     ingest_batch_size: int = Field(
-        default=100,
+        default=50,
         validation_alias=AliasChoices("INGEST_BATCH_SIZE", "BATCH_SIZE"),
+    )
+    # Per-message body length cap (chars). 0 disables. Defends against
+    # multi-MB HTML emails blowing past the Cloud Function memory ceiling.
+    max_body_chars: int = Field(
+        default=512_000,
+        validation_alias=AliasChoices("MAX_BODY_CHARS",),
     )
 
     @computed_field
