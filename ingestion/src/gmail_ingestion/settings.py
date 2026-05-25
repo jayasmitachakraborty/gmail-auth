@@ -57,6 +57,10 @@ class AppSettings(BaseSettings):
         default=0,
         validation_alias=AliasChoices("MAX_MESSAGES_PER_RUN", "MAX_MESSAGES"),
     )
+    ingest_batch_size: int = Field(
+        default=100,
+        validation_alias=AliasChoices("INGEST_BATCH_SIZE", "BATCH_SIZE"),
+    )
 
     @computed_field
     @property

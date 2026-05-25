@@ -39,3 +39,9 @@ variable "gmail_query_extra" {
   type    = string
   default = "in:inbox"
 }
+
+variable "function_memory" {
+  type        = string
+  default     = "1Gi"
+  description = "Memory allocated to the Gmail ingestion Cloud Function"
+}

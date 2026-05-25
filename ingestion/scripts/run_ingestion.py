@@ -22,7 +22,7 @@ Local-only alternative:
 
 Optional (see settings.py for defaults):
   GCP_PROJECT_ID, BQ_DATASET_ID, BQ_TABLE_ID, FIRST_RUN_START_DATE,
-  GMAIL_QUERY_EXTRA, MAX_MESSAGES_PER_RUN
+  GMAIL_QUERY_EXTRA, MAX_MESSAGES_PER_RUN, INGEST_BATCH_SIZE
 
 For --trigger:
   FUNCTION_URL            HTTPS URL of the deployed Cloud Function.
@@ -43,8 +43,6 @@ from gmail_ingestion.fetch import get_message, iter_message_ids, transform_messa
 from gmail_ingestion.load import insert_rows
 from gmail_ingestion.settings import get_settings
 from gmail_ingestion.watermark import get_sync_start
-
-_BATCH_SIZE = 500
 
 
 def run_pipeline(full_backfill: bool = False) -> dict:
@@ -77,7 +75,7 @@ def run_pipeline(full_backfill: bool = False) -> dict:
         rows.append(transform_message(get_message(gmail_service, message_id)))
         fetched += 1
 
-        if len(rows) >= _BATCH_SIZE:
+        if len(rows) >= s.ingest_batch_size:
             inserted += insert_rows(bq_client, rows)
             rows = []
 

@@ -24,6 +24,12 @@ variable "function_timeout_seconds" {
   description = "Max seconds for a single function invocation (backfill may need ~1h)"
 }
 
+variable "function_memory" {
+  type        = string
+  default     = "1Gi"
+  description = "Memory allocated to the Cloud Function v2 service"
+}
+
 resource "google_storage_bucket" "function_source" {
   name                        = "${var.project_id}-gcf-source"
   location                    = var.region
@@ -83,7 +89,7 @@ resource "google_cloudfunctions2_function" "gmail_ingestor" {
   service_config {
     service_account_email = var.ingestor_sa_email
     timeout_seconds       = var.function_timeout_seconds
-    available_memory      = "512M"
+    available_memory      = var.function_memory
     max_instance_count    = 1 # serialise runs
 
     environment_variables = {
