@@ -1,0 +1,54 @@
+# Manually invoke the gmail-bigquery-ingestor Cloud Function (blocks until done).
+name: Ingest
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_backfill:
+        description: "Ignore watermark; re-fetch from FIRST_RUN_START_DATE"
+        type: boolean
+        default: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75 # function timeout 3600s + headroom
+
+    env:
+      GCP_PROJECT_ID: jobs-and-career-494813
+      GCP_REGION: us-central1
+      FUNCTION_NAME: gmail-bigquery-ingestor
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve function URL
+        id: fn
+        run: |
+          URL=$(gcloud functions describe "$FUNCTION_NAME" --gen2 \
+                  --region="$GCP_REGION" --project="$GCP_PROJECT_ID" \
+                  --format='value(serviceConfig.uri)')
+          [ -n "$URL" ] || { echo "Could not resolve function URL" >&2; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Invoke ingestion
+        env:
+          FUNCTION_URL: ${{ steps.fn.outputs.url }}
+          FULL_BACKFILL: ${{ inputs.full_backfill }}
+        run: |
+          TOKEN=$(gcloud auth print-identity-token --audiences="$FUNCTION_URL")
+          BODY=$(printf '{"source":"github-actions","full_backfill":"%s"}' "$FULL_BACKFILL")
+
+          HTTP=$(curl -sS --max-time 3600 -o response.json -w '%{http_code}' \
+                      -H "Authorization: Bearer $TOKEN" \
+                      -H "Content-Type: application/json" \
+                      -d "$BODY" "$FUNCTION_URL")
+
+          echo "Response (HTTP $HTTP):"; cat response.json; echo
+          [ "$HTTP" = "200" ]

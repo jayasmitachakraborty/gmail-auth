@@ -369,8 +369,10 @@ Two workflows under `.github/workflows/`:
   2. `terraform-plan` — runs `terraform init && terraform plan` in `infra/`
      using `GOOGLE_CREDENTIALS` from secrets.
 
-- **`ingest-and-build.yml`** — manual `workflow_dispatch`: POSTs to the
-  Cloud Function (blocks until ingestion completes), then `dbt build --target prod`.
+- **`ingest.yml`** — manual `workflow_dispatch`: POSTs to the Cloud Function
+  and blocks until ingestion completes. Accepts a `full_backfill` boolean input.
+- **`dbt-build.yml`** — manual `workflow_dispatch`: runs `dbt build --target prod`
+  against the current state of the raw tables. Runs independently of `ingest.yml`.
 
 Required GitHub repo secret: **`GCP_SA_KEY`** — JSON key for a SA with
 `dbt-runner` + `terraform-runner` permissions, including

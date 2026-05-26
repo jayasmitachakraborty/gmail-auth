@@ -1,7 +1,4 @@
-# CI-only dbt profile. Committed because it contains no secrets — both
-# `project` and `keyfile` are resolved from env vars at runtime.
-# Used by `.github/workflows/ci.yml` and `.github/workflows/ingest-and-build.yml`.
-# For local development, copy `profiles.yml.example` to `profiles.yml` instead.
+# CI dbt profile. No secrets — `project` and `keyfile` come from env vars.
 jobs_pipeline:
   target: prod
   outputs:

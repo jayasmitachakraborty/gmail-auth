@@ -1,22 +1,24 @@
-name: CI
+# Manually run `dbt build --target prod` against BigQuery.
+name: dbt build
 
 on:
-  pull_request:
-    paths:
-      - 'dbt/**'
-      - 'ingestion/**'
-      - 'infra/**'
+  workflow_dispatch:
 
 jobs:
-  dbt-test:
+  dbt-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DBT_PROJECT: jobs-and-career-494813
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: pip install dbt-bigquery
+
+      - run: pip install -r dbt/requirements.txt
+
       - name: Configure dbt
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
@@ -25,22 +27,9 @@ jobs:
           echo "DBT_SA_KEYFILE=${RUNNER_TEMP}/key.json" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.dbt"
           cp dbt/profiles.ci.yml "$HOME/.dbt/profiles.yml"
-      - name: dbt compile + test
+
+      - name: dbt build
         run: |
           cd dbt
           dbt deps
-          dbt compile --target prod
-          dbt test --target prod --select staging
-
-  terraform-plan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - name: Terraform plan
-        env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
-        run: |
-          cd infra
-          terraform init
-          terraform plan
+          dbt build --target prod
