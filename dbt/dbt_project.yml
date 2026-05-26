@@ -5,6 +5,12 @@ profile: jobs_pipeline
 model-paths: ["models"]
 macro-paths: ["macros"]
 
+vars:
+  # Days with no follow-up after applied_at before a thread is treated as
+  # "no response" in mart_job_applications. Override with `--vars` on the
+  # command line, e.g. `dbt build --vars '{"no_response_days": 21}'`.
+  no_response_days: 14
+
 models:
   jobs_pipeline:
     staging:

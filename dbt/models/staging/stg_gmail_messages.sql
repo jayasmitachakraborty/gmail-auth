@@ -5,6 +5,7 @@ with source as (
 cleaned as (
     select
         message_id,
+        thread_id,
         sender,
         subject,
         snippet,

@@ -18,6 +18,8 @@ sources:
           - name: message_id
             description: "Gmail-assigned immutable message ID; primary key"
             tests: [unique, not_null]
+          - name: thread_id
+            description: "Gmail conversation ID; shared by every reply in the same thread. Used as the natural application key in mart_job_applications."
           - name: received_at
             description: "UTC timestamp the message was received by Gmail"
             tests: [not_null]
@@ -48,6 +50,8 @@ models:
     columns:
       - name: message_id
         tests: [unique, not_null]
+      - name: thread_id
+        description: "Gmail conversation ID; shared by every reply in the same thread."
       - name: received_at
         tests: [not_null]
       - name: ingested_at
@@ -57,3 +61,70 @@ models:
           datepart: hour
           field: received_at
           interval: 72
+
+  - name: mart_job_pipeline
+    description: >-
+      Email-grain mart. One row per job-related Gmail message with its
+      rule-based pipeline category. Powers per-email drill-downs.
+    columns:
+      - name: message_id
+        tests: [unique, not_null]
+      - name: thread_id
+        description: "Gmail conversation ID. Foreign key to mart_job_applications.application_id."
+      - name: received_at
+        tests: [not_null]
+      - name: job_pipeline_category
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - offer
+                - rejection
+                - interview scheduling
+                - applications submitted
+                - recruiter outreach
+                - networking
+                - other
+
+  - name: mart_job_applications
+    description: >-
+      Application-grain mart. One row per Gmail thread (i.e. one row per
+      application or recruiter conversation). Primary dashboard table:
+      drives the scorecards, funnel, donut, and company/role table.
+    columns:
+      - name: application_id
+        description: "Gmail thread_id; natural key."
+        tests: [unique, not_null]
+      - name: company
+        description: "Best-effort hiring company, extracted via regex from sender / subject / body / domain. Nullable when no signal matched."
+      - name: role
+        description: "Best-effort role title, extracted via regex from subject / body. Nullable."
+      - name: applied_at
+        description: "received_at of the earliest 'applications submitted' email in the thread. Null if no submission email was identified."
+      - name: first_email_at
+        description: "received_at of the first email in the thread (always present)."
+        tests: [not_null]
+      - name: latest_status
+        description: "Highest-ranked category in the thread; see README for priority order."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - offer
+                - rejection
+                - interview scheduling
+                - applications submitted
+                - recruiter outreach
+                - networking
+                - other
+      - name: latest_status_at
+        tests: [not_null]
+      - name: has_interview
+        tests: [not_null]
+      - name: has_offer
+        tests: [not_null]
+      - name: has_rejection
+        tests: [not_null]
+      - name: is_no_response
+        description: "True when applied_at is set, no interview / offer / rejection followed, and >= no_response_days have passed."
+        tests: [not_null]

@@ -8,6 +8,7 @@ classifier as (
 
 select
     f.message_id,
+    f.thread_id,
     f.sender,
     f.subject,
     f.snippet,
