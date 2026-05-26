@@ -11,6 +11,7 @@ module "bigquery" {
   project_id        = var.project_id
   dataset_id        = var.dataset_id
   table_id          = var.table_id
+  runs_table_id     = var.runs_table_id
   location          = var.location
   bigquery_location = var.location
 }
@@ -36,6 +37,7 @@ module "function" {
   function_memory      = var.function_memory
   function_cpu         = var.function_cpu
 
-  bq_dataset_id = var.dataset_id
-  bq_table_id   = var.table_id
+  bq_dataset_id    = var.dataset_id
+  bq_table_id      = var.table_id
+  bq_runs_table_id = var.runs_table_id
 }

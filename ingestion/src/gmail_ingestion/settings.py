@@ -39,6 +39,10 @@ class AppSettings(BaseSettings):
         default="gmail_messages",
         validation_alias=AliasChoices("BQ_TABLE_ID", "TABLE_ID"),
     )
+    runs_table_id: str = Field(
+        default="ingestion_runs",
+        validation_alias=AliasChoices("BQ_RUNS_TABLE_ID", "RUNS_TABLE_ID"),
+    )
 
     # Watermark floor for the very first run, before any rows exist.
     first_run_start_date: datetime.date = Field(
@@ -68,10 +72,23 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("MAX_BODY_CHARS",),
     )
 
+    # Day-windowed ingestion. Each window is committed atomically (its
+    # ingestion_runs row only lands on success), so a mid-run crash bounds
+    # the lost work to the *current* window.
+    window_days: int = Field(
+        default=1,
+        validation_alias=AliasChoices("WINDOW_DAYS",),
+    )
+
     @computed_field
     @property
     def bq_table_id(self) -> str:
         return f"{self.project_id}.{self.dataset_id}.{self.table_id}"
+
+    @computed_field
+    @property
+    def bq_runs_table_id(self) -> str:
+        return f"{self.project_id}.{self.dataset_id}.{self.runs_table_id}"
 
 
 @lru_cache

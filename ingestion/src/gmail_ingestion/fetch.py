@@ -25,16 +25,28 @@ def _headers_to_dict(headers: list[dict]) -> dict[str, str]:
 
 
 def _extract_bodies(payload: dict) -> dict[str, str]:
+    """Walk the MIME tree, decode only text/plain + text/html *body* parts.
+
+    Skips attachment-like parts (anything with a ``filename`` or
+    ``body.attachmentId``) — those carry base64 bytes we don't want and
+    were a primary source of memory pressure.
+    """
     plain_parts: list[str] = []
     html_parts: list[str] = []
 
     def _walk(part: dict) -> None:
+        body = part.get("body", {})
+        filename = part.get("filename")
+        if filename or body.get("attachmentId"):
+            return
+
         mime = part.get("mimeType", "")
-        data = part.get("body", {}).get("data")
+        data = body.get("data")
         if mime == "text/plain" and data:
             plain_parts.append(_decode_base64url(data))
         elif mime == "text/html" and data:
             html_parts.append(_decode_base64url(data))
+
         for child in part.get("parts", []):
             _walk(child)
 
@@ -48,14 +60,22 @@ def _extract_bodies(payload: dict) -> dict[str, str]:
 def iter_message_ids(
     gmail_service: Resource,
     after: datetime.datetime,
+    before: datetime.datetime | None = None,
     extra_query: str = "in:inbox",
     max_messages: int = 0,
 ) -> Iterator[str]:
-    """Yield Gmail message IDs newer than *after*, paginating fully.
+    """Yield Gmail message IDs in the half-open window ``[after, before)``.
 
-    ``max_messages=0`` means no cap.
+    Both bounds are floored/ceilinged to whole seconds because Gmail's
+    ``after:`` / ``before:`` operators only accept epoch seconds.
+    ``before=None`` means "up to now". ``max_messages=0`` means no cap.
     """
-    query = f"after:{int(after.timestamp())} {extra_query}".strip()
+    parts = [f"after:{int(after.timestamp())}"]
+    if before is not None:
+        parts.append(f"before:{int(before.timestamp())}")
+    if extra_query:
+        parts.append(extra_query)
+    query = " ".join(parts).strip()
 
     page_token: str | None = None
     yielded = 0

@@ -6,13 +6,54 @@ sources:
     dataset: gmail_data
     tables:
       - name: gmail_messages
+        description: "Raw Gmail messages landed by the Cloud Function"
+        # Freshness measures warehouse-load lag, so use ingested_at (set by
+        # the Cloud Function at insert time), not received_at (set by Gmail
+        # — would falsely fire whenever the mailbox is quiet).
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: { count: 24, period: hour }
+          error_after: { count: 72, period: hour }
         columns:
           - name: message_id
+            description: "Gmail-assigned immutable message ID; primary key"
             tests: [unique, not_null]
+          - name: received_at
+            description: "UTC timestamp the message was received by Gmail"
+            tests: [not_null]
+      - name: ingestion_runs
+        description: >
+          Run-history audit log. One row per completed (or captured-failure)
+          ingestion window. Pipeline watermark =
+          MAX(sync_end) WHERE status='ok'.
+        loaded_at_field: finished_at
+        freshness:
+          warn_after: { count: 24, period: hour }
+          error_after: { count: 72, period: hour }
+        columns:
+          - name: run_id
+            tests: [not_null]
+          - name: status
+            tests:
+              - not_null
+              - accepted_values: { values: ["ok", "error"] }
+          - name: sync_start
+            tests: [not_null]
+          - name: sync_end
+            tests: [not_null]
 
 models:
   - name: stg_gmail_messages
-    description: "Cleaned Gmail messages from raw landing table"
+    description: "Cleaned Gmail messages from the raw landing table"
     columns:
       - name: message_id
         tests: [unique, not_null]
+      - name: received_at
+        tests: [not_null]
+      - name: ingested_at
+        tests: [not_null]
+    tests:
+      - dbt_utils.recency:
+          datepart: hour
+          field: received_at
+          interval: 72

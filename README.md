@@ -46,13 +46,24 @@ short-lived access token automatically.
                             └──────────────────┘
 ```
 
-- **Watermark** — every run picks up from `MAX(received_at)` in
-  `gmail_data.gmail_messages`. First run falls back to `FIRST_RUN_START_DATE`
-  (default `2026-03-01`). The watermark is floored to whole seconds because
-  Gmail's `after:` operator only accepts epoch seconds; sub-second overlap is
-  deduped by `message_id` in `load.py`.
+- **Watermark** — every run picks up from `MAX(sync_end) WHERE status='ok'`
+  in the audit table `gmail_data.ingestion_runs` (one row per completed
+  ingestion window). Cold start / migration falls back to
+  `MAX(received_at)` from `gmail_data.gmail_messages`, then finally to
+  `FIRST_RUN_START_DATE` (default `2026-03-01`). All timestamps are floored
+  to whole seconds because Gmail's `after:` / `before:` operators only
+  accept epoch seconds; sub-second overlap is deduped by `message_id` in
+  `load.py`.
+- **Windowed, oldest-first ingestion** — each run splits `[watermark, now)`
+  into day-aligned windows (`WINDOW_DAYS`, default `1`) and processes them
+  ascending. Only when a window's BigQuery inserts succeed does its
+  `ingestion_runs` row land with `status='ok'`, and only `status='ok'` rows
+  count toward the watermark. A crash (OOM, Gmail 5xx, etc.) therefore
+  bounds lost work to the *current* window; older windows are never
+  re-processed and never silently skipped.
 - **Dedup** — before each insert batch, `load.py` checks which `message_id`s
-  already exist and skips them. Re-runs and overlapping windows are safe.
+  already exist in `gmail_messages` and skips them. Re-runs, overlapping
+  windows, and a retried current window are all idempotent.
 
 ## Repo layout
 
@@ -62,9 +73,10 @@ gmail-auth/
 │   ├── main.py                      # Cloud Function entry-point shim
 │   ├── src/gmail_ingestion/
 │   │   ├── auth.py                  # ADC for BigQuery + user-OAuth for Gmail
-│   │   ├── fetch.py                 # Gmail API list/get/transform
+│   │   ├── fetch.py                 # Gmail API list/get/transform (skips attachment parts)
 │   │   ├── load.py                  # BigQuery dedup + streaming insert
-│   │   ├── watermark.py             # MAX(received_at) lookup
+│   │   ├── runs.py                  # Append-only writes to gmail_data.ingestion_runs
+│   │   ├── watermark.py             # Read MAX(sync_end) WHERE status='ok' from ingestion_runs
 │   │   └── settings.py              # Pydantic settings from env vars
 │   ├── scripts/run_ingestion.py     # Pipeline orchestration + local CLI
 │   ├── scripts/get_user_token.py    # One-off OAuth flow to mint refresh token
@@ -96,7 +108,7 @@ gmail-auth/
 
 | Dataset | Layer | Created by | Notes |
 |---|---|---|---|
-| `gmail_data` | raw | Terraform | Landing table `gmail_messages`, partitioned by `ingested_at`, clustered on `sender, thread_id` |
+| `gmail_data` | raw | Terraform | Landing table `gmail_messages` (partitioned by `ingested_at`, clustered on `sender, thread_id`) and run-history table `ingestion_runs` (partitioned by `started_at`, clustered on `status, run_id`) |
 | `gmail_staging` | dbt staging | Terraform (empty) / dbt | Views over the raw table |
 | `gmail_intermediate` | dbt intermediate | Terraform (empty) / dbt | Ephemeral models (not materialised) |
 | `gmail_marts` | dbt marts | Terraform (empty) / dbt | `mart_job_pipeline` — table partitioned by `received_at`, clustered on `job_pipeline_category, sender` |
@@ -271,13 +283,15 @@ are read from env vars / `.env`.
 | `GCP_PROJECT_ID` / `PROJECT_ID` | `jobs-and-career-494813` | GCP project |
 | `BQ_DATASET_ID` / `DATASET_ID` | `gmail_data` | Raw landing dataset |
 | `BQ_TABLE_ID` / `TABLE_ID` | `gmail_messages` | Raw landing table |
+| `BQ_RUNS_TABLE_ID` / `RUNS_TABLE_ID` | `ingestion_runs` | Run-history audit table that owns the watermark |
 | `GMAIL_USER_TOKEN_JSON` | *(required on GCF)* | User OAuth refresh-token JSON. Mounted from the `gmail-user-oauth-token` Secret Manager secret. |
 | `GMAIL_USER_TOKEN_PATH` | *(local dev only)* | Filesystem path to the same JSON, used instead of inlining via `GMAIL_USER_TOKEN_JSON`. |
-| `FIRST_RUN_START_DATE` | `2026-03-01` | Watermark floor for the first run |
+| `FIRST_RUN_START_DATE` | `2026-03-01` | Watermark floor for the cold start (no run rows yet) |
 | `GMAIL_QUERY_EXTRA` | `in:inbox` | Extra Gmail search operators |
-| `MAX_MESSAGES_PER_RUN` | `0` | Safety cap; `0` = unlimited |
+| `MAX_MESSAGES_PER_RUN` | `0` | Safety cap *per window*; `0` = unlimited |
 | `INGEST_BATCH_SIZE` | `50` | Number of full Gmail messages buffered before each BigQuery insert |
 | `MAX_BODY_CHARS` | `512000` | Per-message body truncation (`plain_body` + `html_body`). `0` disables. |
+| `WINDOW_DAYS` | `1` | Width of each ingestion window. Smaller = finer crash-recovery granularity. |
 
 ## dbt models
 
@@ -298,6 +312,22 @@ stg_gmail_messages          # view in gmail_staging
 Categories produced by `int_job_email_classifier`: `offer`, `rejection`,
 `interview scheduling`, `applications submitted`, `recruiter outreach`,
 `networking`, `other`.
+
+### Data quality
+
+`dbt/models/staging/sources.yml` declares the assertions enforced by
+`dbt build` / `dbt test`:
+
+- `gmail_data.gmail_messages` — `message_id` is `unique` + `not_null`,
+  `received_at` is `not_null`. Source freshness warns at 24h and errors
+  at 72h since the most recent `received_at` (run `dbt source freshness`).
+- `gmail_data.ingestion_runs` — `run_id`, `status`, `sync_start`,
+  `sync_end` are `not_null`; `status` must be `ok` or `error`.
+- `stg_gmail_messages` — column not-null/unique tests plus
+  `dbt_utils.recency` on `received_at` (72h).
+
+`dbt build` is the wire in `.github/workflows/ingest-and-build.yml` and
+fails the workflow on any test failure (default dbt behaviour).
 
 ### Run dbt locally
 

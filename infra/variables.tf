@@ -29,6 +29,12 @@ variable "table_id" {
   default = "gmail_messages"
 }
 
+variable "runs_table_id" {
+  type        = string
+  default     = "ingestion_runs"
+  description = "Run-history table owning the watermark (MAX(sync_end) WHERE status='ok')"
+}
+
 variable "first_run_start_date" {
   type        = string
   default     = "2026-03-01"

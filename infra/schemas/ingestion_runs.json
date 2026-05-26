@@ -1,0 +1,56 @@
+[
+    {
+        "name": "run_id",
+        "type": "STRING",
+        "mode": "REQUIRED",
+        "description": "UUID identifying the Cloud Function invocation that owned this window"
+    },
+    {
+        "name": "started_at",
+        "type": "TIMESTAMP",
+        "mode": "REQUIRED",
+        "description": "Wall-clock time the window started processing"
+    },
+    {
+        "name": "finished_at",
+        "type": "TIMESTAMP",
+        "mode": "REQUIRED",
+        "description": "Wall-clock time the window finished (success or captured failure)"
+    },
+    {
+        "name": "status",
+        "type": "STRING",
+        "mode": "REQUIRED",
+        "description": "'ok' once the window committed cleanly; 'error' for captured failures. OOMs leave no row."
+    },
+    {
+        "name": "sync_start",
+        "type": "TIMESTAMP",
+        "mode": "REQUIRED",
+        "description": "Inclusive lower bound of the Gmail after: filter for this window"
+    },
+    {
+        "name": "sync_end",
+        "type": "TIMESTAMP",
+        "mode": "REQUIRED",
+        "description": "Exclusive upper bound of the Gmail before: filter. Next run's floor = MAX(sync_end) WHERE status='ok'."
+    },
+    {
+        "name": "fetched",
+        "type": "INT64",
+        "mode": "NULLABLE",
+        "description": "Number of Gmail messages enumerated in the window"
+    },
+    {
+        "name": "inserted",
+        "type": "INT64",
+        "mode": "NULLABLE",
+        "description": "Number of new rows written to gmail_messages (after dedup)"
+    },
+    {
+        "name": "error",
+        "type": "STRING",
+        "mode": "NULLABLE",
+        "description": "Stringified exception when status='error', else NULL"
+    }
+]

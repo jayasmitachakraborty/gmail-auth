@@ -4,6 +4,12 @@ variable "table_id" { type = string }
 variable "location" { type = string }
 variable "bigquery_location" { type = string }
 
+variable "runs_table_id" {
+  type        = string
+  default     = "ingestion_runs"
+  description = "Run-history table that owns the watermark (MAX(sync_end) WHERE status='ok')"
+}
+
 resource "google_project_service" "bigquery" {
   project            = var.project_id
   service            = "bigquery.googleapis.com"
@@ -65,10 +71,32 @@ resource "google_bigquery_table" "gmail_messages" {
   clustering = ["sender", "thread_id"]
 }
 
+# Run-history table. One row per completed (or captured-failure) window;
+# the next invocation's floor is MAX(sync_end) WHERE status='ok' so partial
+# failures cannot advance the watermark past un-ingested messages.
+resource "google_bigquery_table" "ingestion_runs" {
+  project             = var.project_id
+  dataset_id          = google_bigquery_dataset.gmail_data.dataset_id
+  table_id            = var.runs_table_id
+  schema              = file("${path.root}/schemas/ingestion_runs.json")
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "started_at"
+  }
+
+  clustering = ["status", "run_id"]
+}
+
 output "dataset_id" {
   value = google_bigquery_dataset.gmail_data.dataset_id
 }
 
 output "table_id" {
   value = google_bigquery_table.gmail_messages.table_id
+}
+
+output "runs_table_id" {
+  value = google_bigquery_table.ingestion_runs.table_id
 }

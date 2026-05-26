@@ -7,6 +7,10 @@ variable "ingestor_sa_email" { type = string }
 variable "gmail_user_token_secret_id" { type = string }
 variable "bq_dataset_id" { type = string }
 variable "bq_table_id" { type = string }
+variable "bq_runs_table_id" {
+  type    = string
+  default = "ingestion_runs"
+}
 
 variable "first_run_start_date" {
   type    = string
@@ -103,6 +107,7 @@ resource "google_cloudfunctions2_function" "gmail_ingestor" {
       GCP_PROJECT_ID       = var.project_id
       BQ_DATASET_ID        = var.bq_dataset_id
       BQ_TABLE_ID          = var.bq_table_id
+      BQ_RUNS_TABLE_ID     = var.bq_runs_table_id
       FIRST_RUN_START_DATE = var.first_run_start_date
       GMAIL_QUERY_EXTRA    = var.gmail_query_extra
     }
