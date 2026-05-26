@@ -21,7 +21,13 @@ jobs:
         run: |
           printf '%s' "$GCP_SA_KEY" > "${RUNNER_TEMP}/gcp-sa-key.json"
           echo "DBT_SA_KEYFILE=${RUNNER_TEMP}/gcp-sa-key.json" >> "$GITHUB_ENV"
+      - name: Install dbt profile
+        run: |
+          mkdir -p "$HOME/.dbt"
+          cp dbt/profiles.ci.yml "$HOME/.dbt/profiles.yml"
       - name: dbt compile + test
+        env:
+          DBT_PROJECT: jobs-and-career-494813
         run: |
           cd dbt
           dbt deps

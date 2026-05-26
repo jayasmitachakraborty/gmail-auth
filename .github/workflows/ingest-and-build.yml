@@ -20,6 +20,7 @@ jobs:
       GCP_PROJECT_ID: jobs-and-career-494813
       GCP_REGION: us-central1
       FUNCTION_NAME: gmail-bigquery-ingestor
+      DBT_PROJECT: jobs-and-career-494813
 
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +79,11 @@ jobs:
         run: |
           printf '%s' "$GCP_SA_KEY" > "${RUNNER_TEMP}/gcp-sa-key.json"
           echo "DBT_SA_KEYFILE=${RUNNER_TEMP}/gcp-sa-key.json" >> "$GITHUB_ENV"
+
+      - name: Install dbt profile
+        run: |
+          mkdir -p "$HOME/.dbt"
+          cp dbt/profiles.ci.yml "$HOME/.dbt/profiles.yml"
 
       - name: dbt build
         run: |

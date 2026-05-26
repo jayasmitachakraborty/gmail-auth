@@ -388,7 +388,9 @@ the function).
 - The OAuth refresh token grants read-only Gmail access for the consenting
   user. Treat it like a password. To revoke, delete the secret version (or
   remove the consent at <https://myaccount.google.com/permissions>).
-- `dbt/profiles.yml` is gitignored — only `profiles.yml.example` is committed.
+- `dbt/profiles.yml` is gitignored — only `profiles.yml.example` (local-dev
+  starter) and `profiles.ci.yml` (CI template, secret-free, uses `env_var()`)
+  are committed.
 - Terraform state is local (`infra/.terraform/`) and gitignored. Move it to a
   GCS backend before sharing the project with multiple operators.
 
