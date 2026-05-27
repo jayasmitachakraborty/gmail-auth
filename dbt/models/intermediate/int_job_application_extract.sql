@@ -1,80 +1,71 @@
 {{ config(materialized='view', schema='intermediate') }}
 
--- Per-email extraction of (company, role) using cheap deterministic regex.
--- The downstream mart picks one winner per thread. Null is acceptable: the
--- LLM fallback (future work) will fill the long tail.
+-- Per-email regex extraction of (company, role, ats_source).
+-- mart_job_applications picks one winner per thread.
+-- Reads from the classifier (not the mart) so it can run in parallel
+-- with mart_job_pipeline.
 
 with src as (
     select
-        message_id,
         thread_id,
         sender,
         subject,
         plain_body,
-        received_at,
-        job_pipeline_category
-    from {{ ref('mart_job_pipeline') }}
+        received_at
+    from {{ ref('int_job_email_classifier') }}
     where thread_id is not null
 ),
 
-with_signals as (
+signals as (
     select
-        *,
-        regexp_extract(sender, r'@([^>\s]+)')              as sender_domain,
-        regexp_extract(sender, r'^\s*"?([^"<]+?)"?\s*<')   as sender_display_raw,
-        substr(coalesce(plain_body, ''), 1, 1500)          as body_head
+        thread_id,
+        received_at,
+        sender,
+        subject,
+        regexp_extract(sender, r'@([^>\s]+)')            as sender_domain,
+        regexp_extract(sender, r'^\s*"?([^"<]+?)"?\s*<') as sender_display_raw,
+        substr(coalesce(plain_body, ''), 1, 1500)        as body_head
     from src
 ),
 
 cleaned as (
     select
-        message_id,
         thread_id,
-        sender,
+        received_at,
         subject,
         body_head,
-        received_at,
-        job_pipeline_category,
         sender_domain,
         nullif(
             trim(regexp_replace(
                 ifnull(sender_display_raw, ''),
-                -- strip generic suffixes like "Stripe Careers" -> "Stripe"
+                -- Strip generic suffixes: "Stripe Careers" -> "Stripe".
                 r'(?i)\s*(careers|recruiting|recruitment|talent(?:\s+acquisition)?|team|jobs|hiring(?:\s+team)?|hr|people(?:\s+team)?|no[\s\-]?reply)\s*$',
                 ''
             )),
             ''
         ) as sender_display_clean
-    from with_signals
+    from signals
 )
 
 select
-    message_id,
     thread_id,
     received_at,
-    job_pipeline_category,
 
     coalesce(
-        -- 1. cleaned display name (most reliable for ATS senders)
         case
             when sender_display_clean is not null
              and length(sender_display_clean) between 2 and 60
             then sender_display_clean
         end,
-
-        -- 2. subject patterns: "...to/at/with/joining <Company>"
         regexp_extract(
             subject,
             r'(?i)\b(?:to|at|with|joining|join)\s+([A-Z][A-Za-z0-9&\.\-]*(?:\s+[A-Z][A-Za-z0-9&\.\-]*){0,3})'
         ),
-
-        -- 3. body patterns: "thank you for your interest in <Company>", etc.
         regexp_extract(
             body_head,
             r'(?i)(?:thank you for (?:your interest in|applying to)|application (?:to|for|received at)|interest in (?:joining|working at))\s+([A-Z][A-Za-z0-9&\.\-]*(?:\s+[A-Z][A-Za-z0-9&\.\-]*){0,3})'
         ),
-
-        -- 4. sender domain, but only when it isn't a known ATS / job board
+        -- Sender domain, but only when it isn't a known ATS / job board.
         case
             when sender_domain is not null
              and not regexp_contains(
@@ -86,28 +77,42 @@ select
     ) as company_guess,
 
     coalesce(
-        -- 1. "applying for [the] <Role>"
         regexp_extract(
             subject,
             r'(?i)applying\s+for(?:\s+the)?\s+([A-Za-z0-9&/\-\s]+?)(?:\s+(?:role|position|at)\b|$)'
         ),
-
-        -- 2. "for the <Role> role/position"
         regexp_extract(
             subject,
             r'(?i)\bfor\s+the\s+([A-Za-z0-9&/\-\s]+?)\s+(?:role|position)\b'
         ),
-
-        -- 3. "<Role> position/role/opportunity at ..."
         regexp_extract(
             subject,
             r'(?i)\b([A-Z][A-Za-z0-9&/\-\s]+?)\s+(?:position|role|opportunity)\s+at\b'
         ),
-
-        -- 4. body fallback
         regexp_extract(
             body_head,
             r'(?i)applying\s+for(?:\s+the)?\s+([A-Za-z0-9&/\-\s]+?)\s+(?:role|position)\b'
         )
-    ) as role_guess
+    ) as role_guess,
+
+    case
+        when regexp_contains(sender_domain, r'(?i)greenhouse\.io')              then 'Greenhouse'
+        when regexp_contains(sender_domain, r'(?i)lever\.co')                   then 'Lever'
+        when regexp_contains(sender_domain, r'(?i)ashbyhq\.com')                then 'Ashby'
+        when regexp_contains(sender_domain, r'(?i)myworkday\.com|workday\.com') then 'Workday'
+        when regexp_contains(sender_domain, r'(?i)smartrecruiters\.com')        then 'SmartRecruiters'
+        when regexp_contains(sender_domain, r'(?i)icims\.com')                  then 'iCIMS'
+        when regexp_contains(sender_domain, r'(?i)bamboohr\.com')               then 'BambooHR'
+        when regexp_contains(sender_domain, r'(?i)recruitee\.com')              then 'Recruitee'
+        when regexp_contains(sender_domain, r'(?i)jobvite\.com')                then 'Jobvite'
+        when regexp_contains(sender_domain, r'(?i)taleo\.net')                  then 'Taleo'
+        when regexp_contains(sender_domain, r'(?i)workable\.com')               then 'Workable'
+        when regexp_contains(sender_domain, r'(?i)breezy\.hr')                  then 'Breezy'
+        when regexp_contains(sender_domain, r'(?i)linkedin\.com')               then 'LinkedIn'
+        when regexp_contains(sender_domain, r'(?i)indeed\.com')                 then 'Indeed'
+        when regexp_contains(sender_domain, r'(?i)ziprecruiter\.com')           then 'ZipRecruiter'
+        when regexp_contains(sender_domain, r'(?i)wellfound\.com')              then 'Wellfound'
+        when regexp_contains(sender_domain, r'(?i)hire\.com')                   then 'Hire'
+        when sender_domain is not null                                          then 'Direct'
+    end as ats_source_guess
 from cleaned

@@ -7,9 +7,8 @@ sources:
     tables:
       - name: gmail_messages
         description: "Raw Gmail messages landed by the Cloud Function"
-        # Freshness measures warehouse-load lag, so use ingested_at (set by
-        # the Cloud Function at insert time), not received_at (set by Gmail
-        # — would falsely fire whenever the mailbox is quiet).
+        # Use ingested_at (Cloud-Function-set) for freshness so the alert
+        # measures pipeline lag, not mailbox quietness.
         loaded_at_field: ingested_at
         freshness:
           warn_after: { count: 24, period: hour }
@@ -19,15 +18,14 @@ sources:
             description: "Gmail-assigned immutable message ID; primary key"
             tests: [unique, not_null]
           - name: thread_id
-            description: "Gmail conversation ID; shared by every reply in the same thread. Used as the natural application key in mart_job_applications."
+            description: "Gmail conversation ID; natural key for mart_job_applications."
           - name: received_at
             description: "UTC timestamp the message was received by Gmail"
             tests: [not_null]
       - name: ingestion_runs
         description: >
-          Run-history audit log. One row per completed (or captured-failure)
-          ingestion window. Pipeline watermark =
-          MAX(sync_end) WHERE status='ok'.
+          Run-history audit log. One row per ingestion window.
+          Pipeline watermark = MAX(sync_end) WHERE status='ok'.
         loaded_at_field: finished_at
         freshness:
           warn_after: { count: 24, period: hour }
@@ -70,7 +68,7 @@ models:
       - name: message_id
         tests: [unique, not_null]
       - name: thread_id
-        description: "Gmail conversation ID. Foreign key to mart_job_applications.application_id."
+        description: "Foreign key to mart_job_applications.application_id."
       - name: received_at
         tests: [not_null]
       - name: job_pipeline_category
@@ -83,41 +81,38 @@ models:
                 - interview scheduling
                 - applications submitted
                 - recruiter outreach
-                - networking
                 - other
 
   - name: mart_job_applications
     description: >-
-      Application-grain mart. One row per Gmail thread (i.e. one row per
-      application or recruiter conversation). Primary dashboard table:
-      drives the scorecards, funnel, donut, and company/role table.
+      Application-grain mart. One row per Gmail thread. Primary dashboard
+      table: drives the scorecards, funnel, donut, timeline, and
+      company/role table.
     columns:
       - name: application_id
         description: "Gmail thread_id; natural key."
         tests: [unique, not_null]
       - name: company
-        description: "Best-effort hiring company, extracted via regex from sender / subject / body / domain. Nullable when no signal matched."
+        description: "Best-effort hiring company (regex extraction)."
       - name: role
-        description: "Best-effort role title, extracted via regex from subject / body. Nullable."
+        description: "Best-effort role title (regex extraction)."
+      - name: ats_source
+        description: >-
+          ATS / job board (Greenhouse, Lever, Ashby, Workday, ...).
+          Derived from sender domain of the earliest email. Powers the
+          'ATS / Source' column in the dashboard table.
       - name: applied_at
-        description: "received_at of the earliest 'applications submitted' email in the thread. Null if no submission email was identified."
+        description: "received_at of the earliest 'applications submitted' email. Null if no submission email was identified."
       - name: first_email_at
-        description: "received_at of the first email in the thread (always present)."
+        description: "received_at of the first email in the thread."
         tests: [not_null]
-      - name: latest_status
-        description: "Highest-ranked category in the thread; see README for priority order."
-        tests:
-          - not_null
-          - accepted_values:
-              values:
-                - offer
-                - rejection
-                - interview scheduling
-                - applications submitted
-                - recruiter outreach
-                - networking
-                - other
+      - name: last_email_at
+        description: "received_at of the most recent email in the thread."
+        tests: [not_null]
+      - name: email_count
+        tests: [not_null]
       - name: latest_status_at
+        description: "received_at of the highest-priority email in the thread (the moment the status last changed). Used to partition the table and to compute days_in_pipeline."
         tests: [not_null]
       - name: has_interview
         tests: [not_null]
@@ -125,6 +120,41 @@ models:
         tests: [not_null]
       - name: has_rejection
         tests: [not_null]
+      - name: has_recruiter_outreach
+        description: "Drives the Recruiter row in the funnel."
+        tests: [not_null]
       - name: is_no_response
-        description: "True when applied_at is set, no interview / offer / rejection followed, and >= no_response_days have passed."
+        description: "True when applied_at is set, nothing followed, and >= no_response_days have elapsed."
+        tests: [not_null]
+      - name: outcome
+        description: >-
+          Single canonical bucket per thread. Priority: offer > rejection
+          > interview > no_response > application > recruiter > other.
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - offer
+                - rejection
+                - interview
+                - no_response
+                - application
+                - recruiter
+                - other
+      - name: days_in_pipeline
+        description: "Days from applied_at (or first_email_at) to latest_status_at. Populated only for offer/rejection threads."
+
+  - name: mart_dashboard_meta
+    description: >-
+      Singleton metadata table (one row) powering the dashboard's
+      'Last updated' indicator.
+    columns:
+      - name: mart_built_at
+        description: "current_timestamp() at dbt build time. Shown as 'Last updated' in the dashboard header."
+        tests: [not_null]
+      - name: data_through
+        description: "Most recent received_at across all Gmail messages."
+        tests: [not_null]
+      - name: application_count
+        description: "Total rows in mart_job_applications at build time."
         tests: [not_null]

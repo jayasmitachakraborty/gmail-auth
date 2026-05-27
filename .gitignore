@@ -24,6 +24,7 @@ __pycache__/
 venv/
 env/
 ENV/
+.venv-dbt/
 
 # Build / packaging
 build/
