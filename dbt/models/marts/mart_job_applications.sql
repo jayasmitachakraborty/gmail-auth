@@ -105,7 +105,7 @@ select
         when has_offer              then 'offer'
         when has_rejection          then 'rejection'
         when has_interview          then 'interview'
-        when is_no_response         then 'no_response'
+        when is_no_response         then 'no response'
         when applied_at is not null then 'application'
         when has_recruiter_outreach then 'recruiter'
         else 'other'
