@@ -13,7 +13,7 @@ select
             r'\b(offer|congratulations|pleased to offer|we are excited to offer)\b')
         then 'offer'
         when regexp_contains(subject_snippet_lower,
-            r"\b(unfortunately|not moving forward|decided to proceed with other candidates|not selected|rejection|move forward with other candidates|you've been unsuccessful)\b")
+            r'\b(unfortunately|not moving forward|decided to proceed with other candidates|not selected|rejection|move forward with other candidates|you.?ve been unsuccessful)\b')
         then 'rejection'
         when regexp_contains(subject_snippet_lower,
             r'\b(interview|schedule a call|availability|available times|calendar invite|meet with|phone screen|technical screen)\b')
