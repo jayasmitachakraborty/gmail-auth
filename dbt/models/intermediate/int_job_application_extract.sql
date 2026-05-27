@@ -1,4 +1,4 @@
-{{ config(materialized='view', schema='gmail_intermediate') }}
+{{ config(materialized='view', schema='intermediate') }}
 
 -- Per-email extraction of (company, role) using cheap deterministic regex.
 -- The downstream mart picks one winner per thread. Null is acceptable: the

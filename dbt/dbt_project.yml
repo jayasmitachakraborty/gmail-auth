@@ -14,13 +14,13 @@ vars:
 models:
   jobs_pipeline:
     staging:
-      +schema: gmail_staging
+      +schema: staging
       +materialized: view
     intermediate:
-      +schema: gmail_intermediate
+      +schema: intermediate
       +materialized: ephemeral
     marts:
-      +schema: gmail_marts
+      +schema: marts
       +materialized: table
       +partition_by:
         field: received_at
